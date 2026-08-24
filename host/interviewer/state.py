@@ -52,6 +52,8 @@ class InterviewState:
     gemini_connected: bool = False
     last_error: str | None = None
     latest_usage_metadata: dict[str, Any] | None = None
+    problem_analysis_status: str = "unavailable"
+    problem_analysis_error: str | None = None
 
     @property
     def is_active(self) -> bool:
@@ -96,6 +98,8 @@ class InterviewState:
         self.gemini_connected = False
         self.last_error = None
         self.latest_usage_metadata = None
+        self.problem_analysis_status = "pending"
+        self.problem_analysis_error = None
 
     def mark_running(self, *, gemini_connected: bool = True) -> None:
         if not self.is_active:
@@ -119,6 +123,14 @@ class InterviewState:
         self.status = InterviewStatus.ERROR
         self.gemini_connected = False
         self.last_error = message
+
+    def mark_problem_analysis_ready(self) -> None:
+        self.problem_analysis_status = "ready"
+        self.problem_analysis_error = None
+
+    def mark_problem_analysis_error(self, message: str) -> None:
+        self.problem_analysis_status = "error"
+        self.problem_analysis_error = message
 
     def update_code(
         self,
@@ -172,6 +184,8 @@ class InterviewState:
         self.gemini_connected = False
         self.last_error = error
         self.latest_usage_metadata = None
+        self.problem_analysis_status = "unavailable"
+        self.problem_analysis_error = None
 
     def elapsed_seconds(self, *, now: float | None = None) -> float:
         if self.started_at_monotonic is None:
@@ -219,4 +233,6 @@ class InterviewState:
             "secondsSinceCodeChange": int(self.seconds_since_code_change(now=timestamp)),
             "model": model,
             "lastError": self.last_error,
+            "problemAnalysisStatus": self.problem_analysis_status,
+            "problemAnalysisError": self.problem_analysis_error,
         }

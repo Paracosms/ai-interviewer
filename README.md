@@ -9,7 +9,8 @@ The application has two local pieces:
 - `extension/`: a Mozilla-signed, self-distributed Firefox WebExtension that
   reads the active LeetCode problem and complete Monaco editor buffer;
 - `host/`: a Python localhost application that owns audio, Gemini Live,
-  interview state, timing, hint authorization, and JSONL session logs.
+  web-grounded problem analysis, interview state, timing, hint authorization,
+  and JSONL session logs.
 
 The host binds only to `127.0.0.1`. The extension and host must use the same
 configurable port, defaulting to `8765`.
@@ -23,8 +24,13 @@ configurable port, defaulting to `8765`.
 - A Google AI Studio Gemini API key with free-tier access
 - Headphones or a headset
 
-The runtime uses only the configured Gemini model and never makes an OpenAI
-request or silently falls back to a paid model.
+At every interview start, the host makes exactly one request to the fixed
+`gemini-3.7-flash` model. That request uses Google Search grounding and a
+structured schema to verify the intended solution and prepare a progressive
+Socratic hint ladder. It runs concurrently with the configured Gemini Live
+voice session, so it does not delay interview startup. There is no alternate
+analysis model or silent fallback, and the application never makes an OpenAI
+request.
 
 ## First-time host setup
 
@@ -103,7 +109,7 @@ Build from the repository root:
 ```
 
 The script generates readable source artifacts under
-`extension/dist/leetcode_ai_interviewer-0.1.4.zip`, runs `web-ext lint`, and
+`extension/dist/leetcode_ai_interviewer-0.1.6.zip`, runs `web-ext lint`, and
 keeps the stable Gecko ID:
 
 ```text
@@ -140,18 +146,39 @@ extension.
 5. Open the signed extension popup.
 6. Confirm **Local host: Connected**.
 7. Confirm the detected title, language, and code length.
-8. Click **Start Interview**.
+8. Click **Start Interview**. The voice interview starts immediately while the
+   host verifies the intended solution and prepares private hints in the
+   background.
 9. Speak naturally and interrupt the interviewer when needed.
 10. Edit code normally in LeetCode; debounced full-buffer updates go to the
     localhost host.
 11. Click **Stop Interview** when finished.
 
+The host sends the problem to Gemini 3.7 Flash with Google Search enabled while
+the Live interviewer begins its greeting and neutral opening questions. The
+analysis requires structured output, evidence that search ran, and at least two
+distinct grounded web sources. Once ready, the private verified solution,
+evaluation checkpoints, and hint ladder become available to the Live
+interviewer through its existing tools. Until then, solution-specific judgments
+and hints are prohibited. The hint timer and tool gate still control whether the
+interviewer may use a verified hint.
+
+If background analysis fails, the voice interview continues, but verified hints
+and solution-specific evaluation remain unavailable. The popup and session
+status report the analysis failure separately from the Live session status.
+
 The host sends the problem, current code when requested by the model tool,
-microphone audio, and conversation context to Gemini. It enables server VAD,
-input/output transcription, native audio, interruption, context-window
-compression, and session resumption. One JSONL log is written under
-`host/logs/` per interview; API keys, resumption handles, and raw audio are not
-logged.
+microphone audio, private interviewer dossier, and conversation context to
+Gemini. The Live session enables server VAD, input/output transcription, native
+audio, interruption, context-window compression, and session resumption. One
+JSONL log with machine-local timestamps is written under `host/logs/` per
+interview; the private solution dossier, API keys, resumption handles, and raw
+audio are not logged. When the interview ends, the latest JSONL log is converted
+to a readable speaker-labelled transcript under `host/transcripts/`. The
+logical transcript name follows `MM-DD-YYYY---HH:MM` using the timestamp in the
+log filename. Windows does not permit `:` in a normal filename, so Windows
+writes the minute separator as `-` on disk (for example,
+`08-24-2026---08-12`).
 
 ## Tests and checks
 
@@ -167,9 +194,11 @@ node --check extension\popup\popup.js
 ```
 
 The Python tests cover state versioning, port/configuration validation,
-localhost endpoints, hint timing, tool authorization, audio buffering and
-device failure, Live configuration, interruption handling, usage logging,
-logging redaction, and mocked session renewal. The extension tests verify
+localhost endpoints, the single grounded analysis request, dossier validation,
+hint timing, tool authorization, audio buffering and device failure, Live
+configuration, interruption handling, usage logging, logging redaction,
+transcript formatting and shutdown generation, and mocked session renewal. The
+extension tests verify
 problem extraction failure/success, complete code payloads, bridge-message
 validation, default port `8765`, port validation and storage, host-offline
 messaging, and that subsequent requests use the saved port.
@@ -192,17 +221,23 @@ suite uses fake Live sessions and cannot prove external service behavior.
 1. Firefox and LeetCode only.
 2. The user must wear headphones or a headset.
 3. LeetCode DOM or editor changes may require selector updates.
-4. The Gemini model is a preview model and its identifier or availability may
-   change.
-5. The application stops when the free quota is unavailable.
+4. The configured Gemini Live model is a preview model and its identifier or
+   availability may change. The analysis model is fixed to stable
+   `gemini-3.7-flash`.
+5. The application stops when Live session quota is unavailable. If analysis or
+   Google Search grounding quota is unavailable, the interview continues in
+   neutral mode without verified hints. Search can have separate billing or
+   quota.
 6. No run-result or test-result awareness exists.
 7. No post-interview report exists.
-8. No theoretical guarantee can prevent every possible model-policy violation,
-   although the timer, tool gate, prompt rules, and acceptance tests
-   substantially constrain assistance.
-9. Only one interview can run at a time.
-10. Changing to another LeetCode problem requires stopping and starting a new
+8. Online grounding and multi-source validation reduce solution errors but
+   cannot mathematically guarantee that every generated dossier is correct.
+9. No theoretical guarantee can prevent every possible model-policy violation,
+   although the private dossier, timer, tool gate, prompt rules, and acceptance
+   tests substantially constrain assistance.
+10. Only one interview can run at a time.
+11. Changing to another LeetCode problem requires stopping and starting a new
     interview.
-11. The localhost host and Firefox extension must be configured with the same
+12. The localhost host and Firefox extension must be configured with the same
     port.
-12. There is no automatic port discovery in the MVP.
+13. There is no automatic port discovery in the MVP.

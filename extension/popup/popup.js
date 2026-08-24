@@ -90,8 +90,12 @@
     elements.elapsed.textContent = hostStatus.running
       ? formatElapsed(displayedElapsedSeconds())
       : "—";
-    elements.hintStatus.textContent = hostStatus.hintsEligible ? "Eligible" : "Locked";
-    elements.lastError.textContent = hostStatus.lastError || "—";
+    elements.hintStatus.textContent = hostStatus.problemAnalysisStatus === "pending"
+      ? "Preparing verified hints"
+      : (hostStatus.problemAnalysisStatus === "error"
+        ? "Verified hints unavailable"
+        : (hostStatus.hintsEligible ? "Eligible" : "Locked"));
+    elements.lastError.textContent = hostStatus.lastError || hostStatus.problemAnalysisError || "—";
 
     const canStart = hostHealth.ok && hostStatus.ok && problemDetected() && !hostStatus.running && ["stopped", "error"].includes(hostStatus.status);
     elements.start.disabled = !canStart;

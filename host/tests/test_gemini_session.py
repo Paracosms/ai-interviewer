@@ -397,3 +397,8 @@ def test_go_away_reconnects_with_latest_handle(tmp_path: Path) -> None:
     assert client.calls[1][1].session_resumption.handle == "resume-me-1"
     assert client.calls[2][1].session_resumption.handle == "resume-me-2"
     assert reconnecting == [True, True]
+    transcripts = list(config.transcripts_dir.iterdir())
+    assert len(transcripts) == 1
+    assert transcripts[0].read_text(encoding="utf-8").startswith(
+        f"This transcript is based off the log: {logger.path.name}\n"
+    )

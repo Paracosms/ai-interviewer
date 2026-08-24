@@ -9,6 +9,7 @@ from typing import Any, Callable
 from google.genai import types
 
 from .hint_gate import HintGate
+from .problem_analysis import ProblemAnalysisContext
 from .state import InterviewState, InterviewStatus
 
 
@@ -19,7 +20,9 @@ def build_interview_tools() -> list[types.Tool]:
         name="get_current_interview_state",
         description=(
             "Return the latest authoritative problem, language, complete code buffer, "
-            "code version, elapsed time, and hint status. Call before code-specific discussion."
+            "code version, elapsed time, hint status, and background problem-analysis status. "
+            "Once analysis is ready, this also returns the private verified solution dossier "
+            "and hint ladder. Call before code-specific or solution-specific discussion."
         ),
         parameters_json_schema={
             "type": "object",
@@ -31,7 +34,8 @@ def build_interview_tools() -> list[types.Tool]:
         name="request_micro_hint",
         description=(
             "Ask the application whether one constrained Socratic question may be used. "
-            "The application, not the model, decides eligibility."
+            "The application, not the model, decides eligibility and returns the private "
+            "precomputed hint candidates when permission is granted."
         ),
         parameters_json_schema={
             "type": "object",
@@ -58,6 +62,7 @@ class InterviewToolService:
     state: InterviewState
     hint_gate: HintGate
     clock: Callable[[], float] = time.monotonic
+    problem_analysis: ProblemAnalysisContext | None = None
 
     async def call(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         arguments = args or {}
@@ -69,7 +74,7 @@ class InterviewToolService:
 
     def get_current_interview_state(self) -> dict[str, Any]:
         now = self.clock()
-        return {
+        result = {
             "problemTitle": self.state.problem_title,
             "language": self.state.language,
             "code": self.state.code,
@@ -78,8 +83,28 @@ class InterviewToolService:
             "hintsEligible": self.state.hints_eligible(self.hint_gate, now=now),
             "secondsSinceCodeChange": int(self.state.seconds_since_code_change(now=now)),
         }
+        if self.problem_analysis is not None:
+            result["problemAnalysis"] = self.problem_analysis.tool_payload()
+        return result
 
     def request_micro_hint(self, args: dict[str, Any]) -> dict[str, Any]:
+        if self.problem_analysis is not None and self.problem_analysis.status != "ready":
+            if self.problem_analysis.status == "error":
+                reason = (
+                    "Verified hints are unavailable because background problem analysis failed. "
+                    "Continue as a neutral interviewer without solution-specific assistance."
+                )
+            else:
+                reason = (
+                    "Verified hints are still being prepared. Continue as a neutral interviewer "
+                    "and do not generate a hint from your own solution attempt."
+                )
+            return {
+                "allowed": False,
+                "reason": reason,
+                "problemAnalysis": self.problem_analysis.tool_payload(),
+            }
+
         now = self.clock()
         explicit = args.get("candidateExplicitlyRequestedHelp") is True
         decision = self.hint_gate.evaluate(
@@ -92,5 +117,14 @@ class InterviewToolService:
         )
         if decision.allowed:
             self.state.last_hint_at = now
-        return decision.as_dict()
-
+        result = decision.as_dict()
+        analysis = self.problem_analysis.analysis if self.problem_analysis is not None else None
+        if decision.allowed and analysis is not None:
+            result["problemAnalysis"] = self.problem_analysis.tool_payload()
+            result["precomputedHintCandidates"] = list(analysis.hint_questions)
+            result["selectionInstruction"] = (
+                "Select the least revealing candidate appropriate to the current conversation "
+                "and code. Ask exactly that one Socratic question, with only minimal wording "
+                "changes needed to fit the candidate's approach."
+            )
+        return result

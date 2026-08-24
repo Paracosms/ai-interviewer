@@ -2,6 +2,8 @@
 host/.env
 logs/
 host/logs/
+transcripts/
+host/transcripts/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -9,4 +11,3 @@ __pycache__/
 host/.venv/
 extension/dist/
 *.xpi
-

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -21,8 +21,10 @@ SENSITIVE_KEY_PARTS = (
 )
 
 
-def utc_timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+def local_timestamp() -> str:
+    """Return the current machine-local time with its UTC offset included."""
+
+    return datetime.now().astimezone().isoformat()
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -54,7 +56,7 @@ class SessionJsonLogger:
 
     def start(self, *, now: float | None = None) -> Path:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%z")
         self.path = self.logs_dir / f"interview-{timestamp}-{uuid.uuid4().hex[:8]}.jsonl"
         self.started_at_monotonic = self.clock() if now is None else float(now)
         return self.path
@@ -72,11 +74,10 @@ class SessionJsonLogger:
         if elapsed_seconds is None and self.started_at_monotonic is not None:
             elapsed_seconds = max(0.0, self.clock() - self.started_at_monotonic)
         record = {
-            "timestamp": utc_timestamp(),
+            "timestamp": local_timestamp(),
             "elapsedSeconds": round(float(elapsed_seconds or 0.0), 3),
             "event": event_type,
             "payload": redact_sensitive(dict(payload or {})),
         }
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-

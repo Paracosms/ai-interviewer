@@ -74,6 +74,8 @@ async function loadPopup() {
             elapsedSeconds: 10,
             hintsEligible: false,
             lastError: null,
+            problemAnalysisStatus: "pending",
+            problemAnalysisError: null,
           };
         }
         throw new Error(`Unexpected message: ${message.type}`);
@@ -110,6 +112,7 @@ test("popup timer advances while the popup remains open", async () => {
   const popup = await loadPopup();
 
   assert.equal(popup.elements.elapsed.textContent, "0:10");
+  assert.equal(popup.elements["hint-status"].textContent, "Preparing verified hints");
   const timer = popup.intervals.find(({ delay }) => delay === 250);
   assert.ok(timer, "expected a live timer interval");
 

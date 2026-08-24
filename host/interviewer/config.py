@@ -39,6 +39,7 @@ class HostConfig:
     log_level: str
     env_file: Path
     logs_dir: Path
+    transcripts_dir: Path
     host_version: str = HOST_VERSION
 
 
@@ -166,4 +167,5 @@ def load_config(
         log_level=log_level,
         env_file=resolved_env_file,
         logs_dir=base_dir / "logs",
+        transcripts_dir=base_dir / "transcripts",
     )
