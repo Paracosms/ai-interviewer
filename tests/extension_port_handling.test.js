@@ -91,3 +91,18 @@ test("host-offline errors identify the configured port", async () => {
   assert.equal(response.port, 8766);
   assert.match(response.error, /not running on port 8766/);
 });
+
+test("HTTP status does not overwrite the interview status", async () => {
+  const background = loadBackground(async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return { ok: true, status: "stopped", running: false };
+    },
+  }));
+
+  const response = await background.listener({ type: "GET_HOST_STATUS" }, {});
+  assert.equal(response.status, "stopped");
+  assert.equal(response.httpStatus, 200);
+  assert.equal(response.running, false);
+});

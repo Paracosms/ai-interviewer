@@ -15,7 +15,10 @@ AUDIO_CHANNELS = 1
 AUDIO_DTYPE = "int16"
 INPUT_BLOCK_MS = 80
 INPUT_BLOCK_FRAMES = INPUT_SAMPLE_RATE * INPUT_BLOCK_MS // 1_000
-OUTPUT_BLOCK_FRAMES = OUTPUT_SAMPLE_RATE * INPUT_BLOCK_MS // 1_000
+OUTPUT_BLOCK_MS = 20
+OUTPUT_BLOCK_FRAMES = OUTPUT_SAMPLE_RATE * OUTPUT_BLOCK_MS // 1_000
+OUTPUT_PREBUFFER_MS = 120
+OUTPUT_PREBUFFER_BYTES = OUTPUT_SAMPLE_RATE * 2 * OUTPUT_PREBUFFER_MS // 1_000
 
 
 class AudioError(RuntimeError):
@@ -34,24 +37,44 @@ def _device_value(value: str | None) -> str | int | None:
 
 
 class PcmPlaybackBuffer:
-    """Bounded, non-blocking PCM buffer consumed by PortAudio's callback."""
+    """Lossless PCM jitter buffer consumed by PortAudio's callback.
 
-    def __init__(self, *, max_bytes: int = OUTPUT_SAMPLE_RATE * 2 * 4) -> None:
-        self.max_bytes = max(1, int(max_bytes))
+    Live audio can arrive faster than the sound device consumes it. Production
+    playback therefore has no size cap: discarding old PCM corrupts speech and
+    commonly cuts through a word. A limit remains available to callers that
+    explicitly need a bounded buffer.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_bytes: int | None = None,
+        prebuffer_bytes: int = 0,
+    ) -> None:
+        self.max_bytes = None if max_bytes is None else max(1, int(max_bytes))
+        requested_prebuffer = max(0, int(prebuffer_bytes))
+        self.prebuffer_bytes = (
+            requested_prebuffer
+            if self.max_bytes is None
+            else min(self.max_bytes, requested_prebuffer)
+        )
         self._chunks: deque[bytes] = deque()
         self._size = 0
+        self._playing = self.prebuffer_bytes == 0
+        self._turn_complete = False
         self._lock = threading.Lock()
 
     def append(self, data: bytes) -> None:
         if not data:
             return
         chunk = bytes(data)
-        if len(chunk) > self.max_bytes:
+        if self.max_bytes is not None and len(chunk) > self.max_bytes:
             chunk = chunk[-self.max_bytes :]
         with self._lock:
-            while self._chunks and self._size + len(chunk) > self.max_bytes:
-                self._size -= len(self._chunks.popleft())
-            if self._size + len(chunk) <= self.max_bytes:
+            if self.max_bytes is not None:
+                while self._chunks and self._size + len(chunk) > self.max_bytes:
+                    self._size -= len(self._chunks.popleft())
+            if self.max_bytes is None or self._size + len(chunk) <= self.max_bytes:
                 self._chunks.append(chunk)
                 self._size += len(chunk)
 
@@ -60,6 +83,24 @@ class PcmPlaybackBuffer:
         if requested == 0:
             return b""
         with self._lock:
+            if not self._playing:
+                if self._size >= self.prebuffer_bytes or (
+                    self._turn_complete and self._size > 0
+                ):
+                    self._playing = True
+                else:
+                    return b""
+
+            # A network gap should pause at a callback boundary and rebuffer,
+            # rather than play a tiny fragment followed by audible silence.
+            if (
+                self.prebuffer_bytes > 0
+                and self._size < requested
+                and not self._turn_complete
+            ):
+                self._playing = False
+                return b""
+
             result = bytearray()
             while self._chunks and len(result) < requested:
                 chunk = self._chunks.popleft()
@@ -72,12 +113,25 @@ class PcmPlaybackBuffer:
                     remainder = chunk[needed:]
                     self._chunks.appendleft(remainder)
                     self._size -= needed
+            if self._size == 0 and self._turn_complete:
+                self._turn_complete = False
+                self._playing = self.prebuffer_bytes == 0
             return bytes(result)
+
+    def finish_turn(self) -> None:
+        """Allow a final short tail to drain without waiting for prebuffering."""
+
+        with self._lock:
+            self._turn_complete = self._size > 0
+            if not self._turn_complete:
+                self._playing = self.prebuffer_bytes == 0
 
     def clear(self) -> None:
         with self._lock:
             self._chunks.clear()
             self._size = 0
+            self._playing = self.prebuffer_bytes == 0
+            self._turn_complete = False
 
     def __len__(self) -> int:
         with self._lock:
@@ -93,12 +147,15 @@ class AudioIO:
         input_device: str | None = None,
         output_device: str | None = None,
         input_queue_size: int = 80,
-        output_buffer_bytes: int = OUTPUT_SAMPLE_RATE * 2 * 4,
+        output_buffer_bytes: int | None = None,
     ) -> None:
         self.input_device = _device_value(input_device)
         self.output_device = _device_value(output_device)
         self.input_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=input_queue_size)
-        self.output_buffer = PcmPlaybackBuffer(max_bytes=output_buffer_bytes)
+        self.output_buffer = PcmPlaybackBuffer(
+            max_bytes=output_buffer_bytes,
+            prebuffer_bytes=OUTPUT_PREBUFFER_BYTES,
+        )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._input_stream: Any = None
         self._output_stream: Any = None
@@ -176,6 +233,9 @@ class AudioIO:
     def write_model_audio(self, data: bytes) -> None:
         self.output_buffer.append(data)
 
+    def finish_model_turn(self) -> None:
+        self.output_buffer.finish_turn()
+
     def clear_output(self) -> None:
         self.output_buffer.clear()
 
@@ -216,4 +276,3 @@ def list_audio_devices() -> str:
     """Return PortAudio's device listing for the CLI diagnostic command."""
 
     return str(sounddevice.query_devices())
-

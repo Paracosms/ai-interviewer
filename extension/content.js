@@ -12,13 +12,17 @@
   const TITLE_SELECTORS = [
     "[data-cy='question-title']",
     "[data-testid='question-title']",
+    "div.text-title-large",
     "h1[data-cy='question-title']",
     "h1",
   ];
   const DESCRIPTION_SELECTORS = [
     "[data-track-load='description_content']",
+    "[data-cy='question-content']",
+    "[data-key='description-content']",
     "[data-testid='description-content']",
     "[data-cy='description-content']",
+    "article",
   ];
 
   let pageUrl = window.location.href;
@@ -34,6 +38,8 @@
 
   function normalizeText(value) {
     return String(value || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\r/g, "")
       .replace(/[ \t]+/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
@@ -50,21 +56,31 @@
   }
 
   function extractTitle() {
-    return firstVisibleText(TITLE_SELECTORS).replace(/^\d+\.\s*/, "");
+    const visibleTitle = firstVisibleText(TITLE_SELECTORS).replace(/^\d+\.\s*/, "");
+    if (visibleTitle) {
+      return visibleTitle;
+    }
+    const meta = document.querySelector("meta[property='og:title']");
+    const metaTitle = meta?.getAttribute?.("content") || "";
+    if (metaTitle.trim()) {
+      return normalizeText(metaTitle).replace(/\s*-\s*LeetCode.*$/i, "");
+    }
+    return normalizeText(document.title || "").replace(/\s*-\s*LeetCode.*$/i, "");
   }
 
   function extractDescription() {
     for (const selector of DESCRIPTION_SELECTORS) {
-      const element = document.querySelector(selector);
-      if (!element) {
-        continue;
-      }
-      const clone = element.cloneNode(true);
-      clone.querySelectorAll("button, nav, header, [aria-hidden='true'], [role='button']")
-        .forEach((node) => node.remove());
-      const text = normalizeText(clone.textContent);
-      if (text.length >= 200) {
-        return text;
+      const elements = typeof document.querySelectorAll === "function"
+        ? document.querySelectorAll(selector)
+        : [document.querySelector(selector)].filter(Boolean);
+      for (const element of elements) {
+        const clone = element.cloneNode(true);
+        clone.querySelectorAll("button, nav, header, svg, style, script, [aria-hidden='true'], [role='button']")
+          .forEach((node) => node.remove());
+        const text = normalizeText(clone.textContent);
+        if (text.length >= 200) {
+          return text;
+        }
       }
     }
     return "";
@@ -246,11 +262,6 @@
   });
 
   window.addEventListener("message", handleBridgeMessage, false);
-  const bridge = document.createElement("script");
-  bridge.src = browser.runtime.getURL("page_bridge.js");
-  bridge.async = false;
-  (document.head || document.documentElement).appendChild(bridge);
-  bridge.remove();
 
   setInterval(() => {
     checkNavigation();

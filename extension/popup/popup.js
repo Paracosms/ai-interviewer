@@ -2,6 +2,8 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  const TIMER_TICK_INTERVAL_MS = 250;
+  const STATUS_REFRESH_INTERVAL_MS = 5000;
   const elements = {
     port: $("host-port"),
     savePort: $("save-port"),
@@ -25,6 +27,9 @@
   let hostHealth = { ok: false };
   let hostStatus = { ok: false, status: "stopped" };
   let pageState = null;
+  let elapsedBaseSeconds = null;
+  let elapsedSyncedAt = null;
+  let statusRefreshPromise = null;
 
   function showMessage(element, text = "") {
     element.textContent = text;
@@ -38,6 +43,30 @@
     const minutes = Math.floor(total / 60);
     const remainder = String(total % 60).padStart(2, "0");
     return `${minutes}:${remainder}`;
+  }
+
+  function monotonicNow() {
+    return typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : Date.now();
+  }
+
+  function updateHostStatus(nextStatus) {
+    hostStatus = nextStatus || { ok: false, status: "stopped" };
+    if (hostStatus.running && Number.isFinite(hostStatus.elapsedSeconds)) {
+      elapsedBaseSeconds = hostStatus.elapsedSeconds;
+      elapsedSyncedAt = monotonicNow();
+    } else {
+      elapsedBaseSeconds = null;
+      elapsedSyncedAt = null;
+    }
+  }
+
+  function displayedElapsedSeconds() {
+    if (elapsedBaseSeconds === null || elapsedSyncedAt === null) {
+      return hostStatus.elapsedSeconds;
+    }
+    return elapsedBaseSeconds + Math.max(0, monotonicNow() - elapsedSyncedAt) / 1000;
   }
 
   function problemDetected() {
@@ -59,7 +88,7 @@
       : "—";
     elements.interviewStatus.textContent = hostStatus.status || "Unknown";
     elements.elapsed.textContent = hostStatus.running
-      ? formatElapsed(hostStatus.elapsedSeconds)
+      ? formatElapsed(displayedElapsedSeconds())
       : "—";
     elements.hintStatus.textContent = hostStatus.hintsEligible ? "Eligible" : "Locked";
     elements.lastError.textContent = hostStatus.lastError || "—";
@@ -97,21 +126,33 @@
     pageState = response?.pageState || null;
   }
 
-  async function refreshStatus() {
-    showMessage(elements.actionMessage, "");
-    const results = await Promise.all([
-      browser.runtime.sendMessage({ type: "GET_HOST_PORT" }),
-      browser.runtime.sendMessage({ type: "HOST_HEALTH" }),
-      browser.runtime.sendMessage({ type: "GET_HOST_STATUS" }),
-      refreshPageState(),
-    ]);
-    const portResult = results[0];
-    if (portResult?.ok) {
-      elements.port.value = String(portResult.port);
+  async function refreshStatus({ clearActionMessage = true } = {}) {
+    if (statusRefreshPromise) {
+      return statusRefreshPromise;
     }
-    hostHealth = results[1] || { ok: false, error: "Host health check failed." };
-    hostStatus = results[2] || { ok: false, status: "stopped", lastError: hostHealth.error };
-    render();
+    statusRefreshPromise = (async () => {
+      if (clearActionMessage) {
+        showMessage(elements.actionMessage, "");
+      }
+      const results = await Promise.all([
+        browser.runtime.sendMessage({ type: "GET_HOST_PORT" }),
+        browser.runtime.sendMessage({ type: "HOST_HEALTH" }),
+        browser.runtime.sendMessage({ type: "GET_HOST_STATUS" }),
+        refreshPageState(),
+      ]);
+      const portResult = results[0];
+      if (portResult?.ok) {
+        elements.port.value = String(portResult.port);
+      }
+      hostHealth = results[1] || { ok: false, error: "Host health check failed." };
+      updateHostStatus(results[2] || { ok: false, status: "stopped", lastError: hostHealth.error });
+      render();
+    })();
+    try {
+      return await statusRefreshPromise;
+    } finally {
+      statusRefreshPromise = null;
+    }
   }
 
   async function savePort() {
@@ -168,6 +209,17 @@
   elements.refresh.addEventListener("click", () => refreshStatus());
   elements.start.addEventListener("click", () => startInterview());
   elements.stop.addEventListener("click", () => stopInterview());
+
+  setInterval(() => {
+    if (hostStatus.running) {
+      render();
+    }
+  }, TIMER_TICK_INTERVAL_MS);
+  setInterval(() => {
+    refreshStatus({ clearActionMessage: false }).catch(() => {
+      // Keep the current display until the next refresh if the host is temporarily unavailable.
+    });
+  }, STATUS_REFRESH_INTERVAL_MS);
 
   (async () => {
     const activeTab = await findActiveTab();

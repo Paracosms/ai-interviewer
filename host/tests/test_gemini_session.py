@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from google.genai import types
@@ -179,6 +180,104 @@ def test_interrupted_message_does_not_requeue_stale_audio(tmp_path: Path) -> Non
     assert len(audio.output_buffer) == 0
 
 
+def test_turn_complete_marks_buffer_to_drain_short_audio(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    audio = AudioIO(output_buffer_bytes=64)
+    session = GeminiLiveSession(
+        config=config,
+        audio=audio,
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=object(),
+    )
+    session._process_message(
+        types.LiveServerMessage(
+            server_content=types.LiveServerContent(
+                model_turn=types.Content(
+                    parts=[
+                        types.Part(
+                            inline_data=types.Blob(
+                                data=b"tail", mime_type="audio/pcm;rate=24000"
+                            )
+                        )
+                    ]
+                ),
+                turn_complete=True,
+            )
+        )
+    )
+    assert audio.output_buffer.read(8) == b"tail"
+
+
+def test_receiver_stays_connected_across_model_turns(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    audio = AudioIO(output_buffer_bytes=64)
+    live = GeminiLiveSession(
+        config=config,
+        audio=audio,
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=object(),
+    )
+
+    class TwoTurnSession:
+        def __init__(self) -> None:
+            self.receive_calls = 0
+
+        def receive(self):
+            self.receive_calls += 1
+            call_number = self.receive_calls
+
+            async def messages():
+                yield types.LiveServerMessage(
+                    server_content=types.LiveServerContent(
+                        model_turn=types.Content(
+                            parts=[
+                                types.Part(
+                                    inline_data=types.Blob(
+                                        data=f"turn-{call_number}".encode(),
+                                        mime_type="audio/pcm;rate=24000",
+                                    )
+                                )
+                            ]
+                        ),
+                        turn_complete=True,
+                    )
+                )
+                if call_number == 2:
+                    live.stop_event.set()
+
+            return messages()
+
+    sdk_session = TwoTurnSession()
+    asyncio.run(live._receive_messages(sdk_session))
+
+    assert sdk_session.receive_calls == 2
+    assert len(audio.output_buffer) == len(b"turn-1turn-2")
+
+
+def test_receiver_ignores_sdk_close_error_during_stop(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    live = GeminiLiveSession(
+        config=config,
+        audio=AudioIO(),
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=object(),
+    )
+
+    class ClosingSession:
+        def receive(self):
+            async def messages():
+                live.stop_event.set()
+                raise RuntimeError("APIError: 1000 None")
+                yield  # pragma: no cover - makes this an async generator.
+
+            return messages()
+
+    asyncio.run(live._receive_messages(ClosingSession()))
+
+
 class FakeAudio:
     def __init__(self) -> None:
         self.started = False
@@ -197,6 +296,9 @@ class FakeAudio:
         del data
 
     def clear_output(self) -> None:
+        return None
+
+    def finish_model_turn(self) -> None:
         return None
 
     def stop(self) -> None:

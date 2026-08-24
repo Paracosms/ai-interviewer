@@ -103,7 +103,7 @@ Build from the repository root:
 ```
 
 The script generates readable source artifacts under
-`extension/dist/leetcode_ai_interviewer-0.1.0.zip`, runs `web-ext lint`, and
+`extension/dist/leetcode_ai_interviewer-0.1.4.zip`, runs `web-ext lint`, and
 keeps the stable Gecko ID:
 
 ```text

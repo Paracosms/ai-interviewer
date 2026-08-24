@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LeetCode AI Interviewer",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Connects a LeetCode problem and editor to a local AI interviewer host.",
   "browser_specific_settings": {
     "gecko": {
@@ -45,17 +45,17 @@
       "js": [
         "content.js"
       ],
-      "run_at": "document_idle"
-    }
-  ],
-  "web_accessible_resources": [
+      "run_at": "document_start"
+    },
     {
-      "resources": [
-        "page_bridge.js"
-      ],
       "matches": [
         "https://leetcode.com/problems/*"
-      ]
+      ],
+      "js": [
+        "page_bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ]
 }

@@ -71,12 +71,12 @@
       if (!response.ok) {
         return {
           ok: false,
-          status: response.status,
+          httpStatus: response.status,
           error: payload.error || `Local host returned HTTP ${response.status}.`,
           port,
         };
       }
-      return { ...payload, status: response.status, port };
+      return { ...payload, httpStatus: response.status, port };
     } catch (error) {
       const message = error?.name === "AbortError"
         ? `Local interviewer host request timed out on port ${port}.`
@@ -169,4 +169,3 @@
   browser.runtime.onMessage.addListener((message, sender) => handleMessage(message, sender));
   browser.tabs.onRemoved.addListener((tabId) => tabStates.delete(tabId));
 })();
-

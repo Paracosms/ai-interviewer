@@ -18,7 +18,7 @@ function textElement(text) {
   };
 }
 
-function loadContent({ title = "Two Sum", description = "" } = {}) {
+function loadContent({ title = "Two Sum", description = "", descriptionSelector = "data-track" } = {}) {
   const messages = [];
   const intervals = [];
   const timeouts = [];
@@ -40,10 +40,19 @@ function loadContent({ title = "Two Sum", description = "" } = {}) {
       if (selector.includes("question-title")) {
         return titleElement;
       }
-      if (selector.includes("description")) {
+      if (selector.includes(descriptionSelector)) {
         return descriptionElement;
       }
       return null;
+    },
+    querySelectorAll(selector) {
+      if (selector.includes("question-title")) {
+        return titleElement ? [titleElement] : [];
+      }
+      if (selector.includes(descriptionSelector)) {
+        return descriptionElement ? [descriptionElement] : [];
+      }
+      return [];
     },
     createElement() {
       return {
@@ -160,6 +169,17 @@ test("content script combines the problem and complete code snapshot", () => {
     code: "class Solution {\n  // off-screen comment\n}",
     codeVersion: 1,
   });
+});
+
+test("content script supports the data-key description container", () => {
+  const harness = loadContent({
+    description: "Description text. ".repeat(20),
+    descriptionSelector: "data-key",
+  });
+  harness.tick();
+  const state = latestPageState(harness.messages);
+  assert.equal(state.problemText, "Description text. ".repeat(20).trim());
+  assert.equal(state.error, "LeetCode editor model was not detected. Reload the problem page and try again.");
 });
 
 test("content script ignores spoofed page messages from another window", () => {

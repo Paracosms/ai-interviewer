@@ -4,11 +4,15 @@
   const MESSAGE_SOURCE = "leetcode-ai-interviewer-page-bridge";
   const PROTOCOL_VERSION = 1;
   const MAX_CODE_LENGTH = 50000;
+  const SNAPSHOT_HEARTBEAT_MS = 3000;
   const EDITOR_NOT_DETECTED_MESSAGE = "LeetCode editor model was not detected. Reload the problem page and try again.";
   let lastCode = null;
   let lastLanguage = null;
   let lastError = null;
   let lastPageUrl = window.location.href;
+  let lastSnapshotAt = 0;
+  let selectedModel = null;
+  let modelSnapshots = new WeakMap();
 
   function publish(type, payload) {
     window.postMessage(
@@ -40,13 +44,23 @@
       .map((model) => {
         let code = "";
         let language = "";
+        let version = null;
+        let attached = false;
         try {
           code = model.getValue();
           language = model.getLanguageId?.() || "";
+          version = model.getVersionId?.() ?? null;
+          attached = model.isAttachedToEditor?.() === true;
         } catch (_error) {
           return null;
         }
-        return { model, code, language };
+        const previous = modelSnapshots.get(model);
+        const changed = Boolean(previous) && (
+          previous.code !== code ||
+          previous.language !== language ||
+          previous.version !== version
+        );
+        return { model, code, language, version, attached, changed };
       })
       .filter((candidate) => (
         candidate &&
@@ -54,9 +68,33 @@
         candidate.code.length <= MAX_CODE_LENGTH &&
         candidate.language &&
         candidate.language.toLowerCase() !== "plaintext"
-      ))
-      .sort((left, right) => right.code.length - left.code.length);
-    return viable[0] || null;
+      ));
+
+    for (const candidate of viable) {
+      modelSnapshots.set(candidate.model, {
+        code: candidate.code,
+        language: candidate.language,
+        version: candidate.version,
+      });
+    }
+
+    // LeetCode can retain a larger, static starter model beside the model that
+    // backs the visible editor. Prefer an attached model and, most importantly,
+    // follow whichever viable model is receiving edits.
+    const byLength = (left, right) => right.code.length - left.code.length;
+    const changedAttached = viable.filter((candidate) => candidate.changed && candidate.attached).sort(byLength);
+    const attached = viable.filter((candidate) => candidate.attached).sort(byLength);
+    const changed = viable.filter((candidate) => candidate.changed).sort(byLength);
+    const previousSelection = viable.find((candidate) => candidate.model === selectedModel);
+    const selected = changedAttached[0]
+      || changed[0]
+      || (previousSelection?.attached ? previousSelection : null)
+      || attached[0]
+      || previousSelection
+      || viable.sort(byLength)[0]
+      || null;
+    selectedModel = selected?.model || null;
+    return selected;
   }
 
   function pollEditor() {
@@ -65,6 +103,9 @@
       lastCode = null;
       lastLanguage = null;
       lastError = null;
+      lastSnapshotAt = 0;
+      selectedModel = null;
+      modelSnapshots = new WeakMap();
     }
     const selected = chooseModel();
     if (!selected) {
@@ -75,17 +116,23 @@
       return;
     }
     lastError = null;
-    const { model, code, language } = selected;
-    if (code === lastCode && language === lastLanguage) {
+    const { model, code, language, version: selectedVersion } = selected;
+    const now = Date.now();
+    if (
+      code === lastCode &&
+      language === lastLanguage &&
+      now - lastSnapshotAt < SNAPSHOT_HEARTBEAT_MS
+    ) {
       return;
     }
     lastCode = code;
     lastLanguage = language;
+    lastSnapshotAt = now;
     let modelUri = null;
     let version = null;
     try {
       modelUri = model.uri?.toString?.() || null;
-      version = model.getVersionId?.() ?? null;
+      version = selectedVersion;
     } catch (_error) {
       // The source and language remain authoritative when optional metadata is unavailable.
     }

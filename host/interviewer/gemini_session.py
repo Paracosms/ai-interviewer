@@ -283,7 +283,7 @@ class GeminiLiveSession:
             raise GeminiSessionError(message) from exc
         finally:
             self._session = None
-            self._cancel_child_tasks()
+            await self._cancel_child_tasks()
             self.audio.stop()
             self._print_usage_summary()
             self.logger.log("session_stopped")
@@ -339,7 +339,7 @@ class GeminiLiveSession:
             try:
                 await self._wait_for_tasks()
             finally:
-                self._cancel_child_tasks()
+                await self._cancel_child_tasks()
                 self._session = None
 
     def _can_retry(self, message: str, attempt: int) -> bool:
@@ -363,7 +363,7 @@ class GeminiLiveSession:
         if self.stop_event.is_set():
             for task in pending:
                 task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
             return
         for task in done:
             error = task.exception()
@@ -376,12 +376,19 @@ class GeminiLiveSession:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
 
-    def _cancel_child_tasks(self) -> None:
-        for task in (self._sender_task, self._receiver_task):
-            if task is not None and not task.done():
-                task.cancel()
+    async def _cancel_child_tasks(self) -> None:
+        tasks = [
+            task
+            for task in (self._sender_task, self._receiver_task)
+            if task is not None
+        ]
         self._sender_task = None
         self._receiver_task = None
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _send_microphone(self, session: Any) -> None:
         mime_type = f"audio/pcm;rate={INPUT_SAMPLE_RATE}"
@@ -395,13 +402,24 @@ class GeminiLiveSession:
             )
 
     async def _receive_messages(self, session: Any) -> None:
-        async for message in session.receive():
+        try:
+            # google-genai's receive() iterator represents one model turn, not
+            # the lifetime of the Live connection. Start a new iterator after
+            # each turn so microphone input remains active between answers.
+            while not self.stop_event.is_set():
+                async for message in session.receive():
+                    if self.stop_event.is_set():
+                        return
+                    self._process_message(message)
+                    await self._handle_tool_calls(session, message)
+                    if self._go_away_received:
+                        return
+        except Exception:
+            # google-genai 1.75 translates even a normal WebSocket close (1000)
+            # into APIError. Closing an interview must not orphan that error.
             if self.stop_event.is_set():
                 return
-            self._process_message(message)
-            await self._handle_tool_calls(session, message)
-            if self._go_away_received:
-                return
+            raise
 
     async def _handle_tool_calls(self, session: Any, message: Any) -> None:
         tool_call = getattr(message, "tool_call", None)
@@ -474,19 +492,25 @@ class GeminiLiveSession:
         audio = getattr(message, "data", None)
         if audio and not interrupted:
             self.audio.write_model_audio(audio)
+        if (
+            server_content is not None
+            and server_content.turn_complete
+            and not interrupted
+        ):
+            self.audio.finish_model_turn()
 
     async def stop(self) -> None:
         """Stop microphone transmission, clear playback, and close the session."""
 
         self.stop_event.set()
         self.audio.clear_output()
+        await self._cancel_child_tasks()
         session = self._session
         if session is not None:
             try:
                 await session.close()
             except Exception:  # noqa: BLE001 - shutdown must remain idempotent.
                 pass
-        self._cancel_child_tasks()
 
 
 class HostSessionManager:
