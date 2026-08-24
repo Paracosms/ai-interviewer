@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LeetCode AI Interviewer</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="panel">
+    <h1>LeetCode AI Interviewer</h1>
+
+    <section class="settings" aria-labelledby="settings-heading">
+      <h2 id="settings-heading">Host port</h2>
+      <div class="port-row">
+        <label for="host-port">Port</label>
+        <input id="host-port" type="number" min="1" max="65535" step="1" inputmode="numeric">
+        <button id="save-port" type="button">Save</button>
+      </div>
+      <p id="port-message" class="message" role="status"></p>
+    </section>
+
+    <dl class="status-list">
+      <div><dt>Local host</dt><dd id="host-status">Checking…</dd></div>
+      <div><dt>LeetCode problem</dt><dd id="problem-status">Checking…</dd></div>
+      <div><dt>Title</dt><dd id="problem-title">—</dd></div>
+      <div><dt>Language</dt><dd id="language">—</dd></div>
+      <div><dt>Code</dt><dd id="code-length">—</dd></div>
+      <div><dt>Interview</dt><dd id="interview-status">Checking…</dd></div>
+      <div><dt>Elapsed</dt><dd id="elapsed">—</dd></div>
+      <div><dt>Hints</dt><dd id="hint-status">—</dd></div>
+      <div><dt>Last error</dt><dd id="last-error">—</dd></div>
+    </dl>
+
+    <div class="actions">
+      <button id="start-interview" class="primary" type="button">Start Interview</button>
+      <button id="stop-interview" class="danger" type="button">Stop Interview</button>
+      <button id="refresh-status" type="button">Refresh Status</button>
+    </div>
+    <p id="action-message" class="message" role="status"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
+

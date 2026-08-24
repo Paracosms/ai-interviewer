@@ -1,0 +1,12 @@
+.env
+host/.env
+logs/
+host/logs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+host/.venv/
+extension/dist/
+*.xpi
+
