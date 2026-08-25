@@ -42,6 +42,7 @@ class FakeLiveSession:
 
     def __init__(self, *, on_ready=None, on_usage=None, on_reconnecting=None, **kwargs):
         self.system_instruction = kwargs["system_instruction"]
+        self.voice = kwargs["config"].gemini_voice
         self.tool_handler = kwargs["tool_handler"]
         self.on_ready = on_ready
         self.on_usage = on_usage
@@ -175,6 +176,37 @@ async def test_live_starts_while_problem_analysis_remains_in_background(tmp_path
         )
         assert ready["problemAnalysis"]["status"] == "ready"
         assert "verifiedProblemDossier" in ready["problemAnalysis"]
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_selected_voice_is_used_for_live_session(tmp_path, monkeypatch):
+    FakeLiveSession.instances.clear()
+    monkeypatch.setattr(gemini_session, "GeminiLiveSession", FakeLiveSession)
+    config = make_config(tmp_path)
+    manager = HostSessionManager(
+        config=config,
+        prompt_path=tmp_path / "prompt.txt",
+        problem_analyzer=FakeProblemAnalyzer(),
+    )
+    (tmp_path / "prompt.txt").write_text("interviewer behavior", encoding="utf-8")
+    payload = start_payload()
+    payload["voice"] = "Aoede"
+    state = InterviewState()
+    state.begin(
+        page_url=payload["pageUrl"],
+        problem_slug=payload["problemSlug"],
+        problem_title=payload["problemTitle"],
+        problem_text=payload["problemText"],
+        language=payload["language"],
+        code=payload["code"],
+        code_version=payload["codeVersion"],
+    )
+
+    try:
+        await manager.start(payload, state)
+        assert FakeLiveSession.instances[0].voice == "Aoede"
     finally:
         await manager.stop()
 

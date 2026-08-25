@@ -3,6 +3,15 @@
 
   const DEFAULT_HOST_PORT = 8765;
   const HOST_PORT_KEY = "hostPort";
+  const DEFAULT_GEMINI_VOICE = "Kore";
+  const GEMINI_VOICE_KEY = "geminiVoice";
+  const SUPPORTED_GEMINI_VOICES = new Set([
+    "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
+    "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina",
+    "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar",
+    "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia",
+    "Sadaltager", "Sulafat",
+  ]);
   const PROTOCOL_VERSION = 1;
   const REQUEST_TIMEOUT_MS = 2500;
   const MAXIMUMS = Object.freeze({
@@ -40,6 +49,23 @@
     }
     await browser.storage.local.set({ [HOST_PORT_KEY]: port });
     return { ok: true, port };
+  }
+
+  async function getGeminiVoice() {
+    const stored = await browser.storage.local.get(GEMINI_VOICE_KEY);
+    const voice = stored[GEMINI_VOICE_KEY];
+    return {
+      ok: true,
+      voice: SUPPORTED_GEMINI_VOICES.has(voice) ? voice : DEFAULT_GEMINI_VOICE,
+    };
+  }
+
+  async function saveGeminiVoice(value) {
+    if (!SUPPORTED_GEMINI_VOICES.has(value)) {
+      return { ok: false, error: "Choose a supported Gemini voice." };
+    }
+    await browser.storage.local.set({ [GEMINI_VOICE_KEY]: value });
+    return { ok: true, voice: value };
   }
 
   function getBaseUrl(port) {
@@ -135,6 +161,12 @@
       const health = await requestHost("/health");
       return { ...saved, health };
     }
+    if (type === "GET_GEMINI_VOICE") {
+      return getGeminiVoice();
+    }
+    if (type === "SAVE_GEMINI_VOICE") {
+      return saveGeminiVoice(message.voice);
+    }
     if (type === "PAGE_STATE_UPDATE") {
       const tabId = sender?.tab?.id;
       const pageState = sanitizePageState(message.payload);
@@ -168,6 +200,15 @@
     }
     if (type === "CODE_UPDATE") {
       return requestHost("/session/code", { method: "POST", body: message.payload });
+    }
+    if (type === "SET_INTERACTION_MODE") {
+      return requestHost("/session/mode", {
+        method: "POST",
+        body: { protocolVersion: PROTOCOL_VERSION, mode: message.mode },
+      });
+    }
+    if (type === "RUN_RESULT") {
+      return requestHost("/session/run-result", { method: "POST", body: message.payload });
     }
     return { ok: false, error: "Unknown extension message." };
   }

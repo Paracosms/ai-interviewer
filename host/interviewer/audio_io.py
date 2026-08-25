@@ -6,6 +6,7 @@ import asyncio
 import math
 import struct
 import threading
+import time
 from collections import deque
 from typing import Any
 
@@ -21,6 +22,7 @@ OUTPUT_BLOCK_MS = 20
 OUTPUT_BLOCK_FRAMES = OUTPUT_SAMPLE_RATE * OUTPUT_BLOCK_MS // 1_000
 OUTPUT_PREBUFFER_MS = 120
 OUTPUT_PREBUFFER_BYTES = OUTPUT_SAMPLE_RATE * 2 * OUTPUT_PREBUFFER_MS // 1_000
+PLAYBACK_MICROPHONE_TAIL_SECONDS = 0.3
 
 
 class AudioError(RuntimeError):
@@ -87,6 +89,7 @@ class PcmPlaybackBuffer:
         self._size = 0
         self._playing = self.prebuffer_bytes == 0
         self._turn_complete = False
+        self._held = False
         self._lock = threading.Lock()
 
     def append(self, data: bytes) -> None:
@@ -108,6 +111,8 @@ class PcmPlaybackBuffer:
         if requested == 0:
             return b""
         with self._lock:
+            if self._held:
+                return b""
             if not self._playing:
                 if self._size >= self.prebuffer_bytes or (
                     self._turn_complete and self._size > 0
@@ -151,12 +156,26 @@ class PcmPlaybackBuffer:
             if not self._turn_complete:
                 self._playing = self.prebuffer_bytes == 0
 
+    def hold(self) -> None:
+        with self._lock:
+            self._held = True
+
+    def release(self) -> None:
+        with self._lock:
+            self._held = False
+
+    @property
+    def held(self) -> bool:
+        with self._lock:
+            return self._held
+
     def clear(self) -> None:
         with self._lock:
             self._chunks.clear()
             self._size = 0
             self._playing = self.prebuffer_bytes == 0
             self._turn_complete = False
+            self._held = False
 
     def __len__(self) -> int:
         with self._lock:
@@ -174,6 +193,8 @@ class AudioIO:
         input_queue_size: int = 80,
         output_buffer_bytes: int | None = None,
         volume: float = 1.0,
+        clock=time.monotonic,
+        microphone_tail_seconds: float = PLAYBACK_MICROPHONE_TAIL_SECONDS,
     ) -> None:
         self.input_device = _device_value(input_device)
         self.output_device = _device_value(output_device)
@@ -184,6 +205,11 @@ class AudioIO:
         )
         self._volume = _validate_volume(volume)
         self._volume_lock = threading.Lock()
+        self._clock = clock
+        self._microphone_tail_seconds = max(0.0, float(microphone_tail_seconds))
+        self._input_suppression_lock = threading.Lock()
+        self._suppress_input_until = 0.0
+        self._suppressed_input_blocks = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._input_stream: Any = None
         self._output_stream: Any = None
@@ -201,6 +227,47 @@ class AudioIO:
     def set_volume(self, value: float) -> None:
         with self._volume_lock:
             self._volume = _validate_volume(value)
+
+    @property
+    def output_held(self) -> bool:
+        return self.output_buffer.held
+
+    @property
+    def suppressed_input_blocks(self) -> int:
+        with self._input_suppression_lock:
+            return self._suppressed_input_blocks
+
+    def hold_model_output(self) -> None:
+        self.output_buffer.hold()
+
+    def release_model_output(self) -> None:
+        self.output_buffer.release()
+
+    def should_forward_microphone(self) -> bool:
+        with self._input_suppression_lock:
+            return self._clock() >= self._suppress_input_until
+
+    def _mark_model_playback(self) -> None:
+        now = self._clock()
+        with self._input_suppression_lock:
+            was_suppressed = now < self._suppress_input_until
+            self._suppress_input_until = max(
+                self._suppress_input_until,
+                now + self._microphone_tail_seconds,
+            )
+        if not was_suppressed and self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._flush_input_queue)
+
+    def _record_suppressed_input(self) -> None:
+        with self._input_suppression_lock:
+            self._suppressed_input_blocks += 1
+
+    def _flush_input_queue(self) -> None:
+        while not self.input_queue.empty():
+            try:
+                self.input_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
     def start(self) -> None:
         """Open both streams, failing before a Gemini session is connected."""
@@ -245,6 +312,9 @@ class AudioIO:
         del frames, time_info, status
         if not self._accept_input or self._loop is None:
             return
+        if not self.should_forward_microphone():
+            self._record_suppressed_input()
+            return
         data = bytes(indata)
         if self._loop.is_running():
             self._loop.call_soon_threadsafe(self._enqueue_input, data)
@@ -282,6 +352,7 @@ class AudioIO:
         outdata[:] = b"\x00" * output_size
         data = self.output_buffer.read(output_size)
         if data:
+            self._mark_model_playback()
             data = _scale_pcm16(data, self.volume)
             outdata[: len(data)] = data
 
@@ -303,11 +374,7 @@ class AudioIO:
                 pass
             setattr(self, stream_name, None)
         self.clear_output()
-        while not self.input_queue.empty():
-            try:
-                self.input_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+        self._flush_input_queue()
 
 
 def list_audio_devices() -> str:

@@ -1,9 +1,12 @@
 import pytest
 
+from interviewer.hint_gate import HintGate
 from interviewer.state import (
     CodeUpdateResult,
+    InteractionMode,
     InterviewState,
     ProblemChangedError,
+    RunResultUpdate,
 )
 from interviewer.gemini_session import HostSessionManager
 
@@ -126,3 +129,28 @@ def test_stopping_is_an_active_state() -> None:
     assert state.status.value == "stopping"
     assert state.is_active is True
     assert state.gemini_connected is False
+
+
+def test_interaction_mode_and_failed_run_result_are_application_owned() -> None:
+    state = make_state()
+    assert state.set_interaction_mode("focus") is InteractionMode.FOCUS
+    result = {
+        "pageUrl": state.problem_url,
+        "codeVersion": state.code_version,
+        "status": "failed",
+        "resultSignature": "failure-1",
+    }
+    assert state.accept_failed_run_result(result) is RunResultUpdate.ACCEPTED
+    assert state.accept_failed_run_result(result) is RunResultUpdate.IGNORED_DUPLICATE
+    stale = {**result, "resultSignature": "failure-2", "codeVersion": 0}
+    assert state.accept_failed_run_result(stale) is RunResultUpdate.IGNORED_STALE
+    snapshot = state.public_snapshot(model="model", hint_gate=HintGate())
+    assert snapshot["interactionMode"] == "focus"
+    state.update_code(
+        page_url=state.problem_url,
+        language="python3",
+        code="new code",
+        code_version=2,
+        now=200,
+    )
+    assert state.latest_run_result is None

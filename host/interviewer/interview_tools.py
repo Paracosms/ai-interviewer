@@ -1,4 +1,4 @@
-"""The two application-owned Gemini function tools."""
+"""Application-owned Gemini function tools for the live interview."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .state import InterviewState, InterviewStatus
 
 
 def build_interview_tools() -> list[types.Tool]:
-    """Return exactly the two local tools allowed in an interview."""
+    """Return the application-owned tools allowed in an interview."""
 
     get_state = types.FunctionDeclaration(
         name="get_current_interview_state",
@@ -52,7 +52,25 @@ def build_interview_tools() -> list[types.Tool]:
             "additionalProperties": False,
         },
     )
-    return [types.Tool(function_declarations=[get_state, request_hint])]
+    set_mode = types.FunctionDeclaration(
+        name="set_interaction_mode",
+        description=(
+            "Persist whether the candidate wants normal conversation or uninterrupted focus time. "
+            "Use focus when the candidate says they will implement, explain while coding, think "
+            "out loud, or asks for a moment. Use conversation when they explicitly say they are "
+            "done or ready for normal feedback."
+        ),
+        parameters_json_schema={
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["conversation", "focus"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["mode"],
+            "additionalProperties": False,
+        },
+    )
+    return [types.Tool(function_declarations=[get_state, request_hint, set_mode])]
 
 
 @dataclass(slots=True)
@@ -70,6 +88,8 @@ class InterviewToolService:
             return self.get_current_interview_state()
         if name == "request_micro_hint":
             return self.request_micro_hint(arguments)
+        if name == "set_interaction_mode":
+            return self.set_interaction_mode(arguments)
         return {"error": f"Unknown interview tool: {name}"}
 
     def get_current_interview_state(self) -> dict[str, Any]:
@@ -82,10 +102,22 @@ class InterviewToolService:
             "elapsedSeconds": int(self.state.elapsed_seconds(now=now)),
             "hintsEligible": self.state.hints_eligible(self.hint_gate, now=now),
             "secondsSinceCodeChange": int(self.state.seconds_since_code_change(now=now)),
+            "interactionMode": self.state.interaction_mode.value,
+            "latestRunResult": self.state.latest_run_result,
         }
         if self.problem_analysis is not None:
             result["problemAnalysis"] = self.problem_analysis.tool_payload()
         return result
+
+    def set_interaction_mode(self, args: dict[str, Any]) -> dict[str, Any]:
+        mode = args.get("mode")
+        if not isinstance(mode, str):
+            return {"error": "mode must be conversation or focus."}
+        try:
+            resolved = self.state.set_interaction_mode(mode)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"ok": True, "interactionMode": resolved.value}
 
     def request_micro_hint(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.problem_analysis is not None and self.problem_analysis.status != "ready":

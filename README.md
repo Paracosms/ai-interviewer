@@ -45,6 +45,7 @@ Edit `host/.env` and add the key. The default configuration is:
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-3.1-flash-live-preview
 GEMINI_VOICE=Kore
+GEMINI_THINKING_LEVEL=low
 LOCAL_HOST=127.0.0.1
 LOCAL_PORT=8765
 AUDIO_INPUT_DEVICE=
@@ -77,13 +78,16 @@ Expected output reflects the actual configured port:
 LeetCode AI Interviewer host
 Listening on http://127.0.0.1:8765
 Model: gemini-3.1-flash-live-preview
+Thinking level: low
 Audio input: Windows default
 Audio output: Windows default
 Status: ready
 ```
 
-Use headphones or a headset. Speakerphone mode is not supported in the MVP and
-acoustic echo cancellation is intentionally not implemented.
+Use headphones or a headset. The host also pauses microphone forwarding while
+interviewer audio plays and for a short acoustic tail, preventing the
+interviewer from hearing and interrupting itself. Verbal barge-in is therefore
+unavailable while interviewer audio is playing.
 
 For an audio-only development check before browser integration:
 
@@ -109,7 +113,7 @@ Build from the repository root:
 ```
 
 The script generates readable source artifacts under
-`extension/dist/leetcode_ai_interviewer-0.1.7.zip`, runs `web-ext lint`, and
+`extension/dist/leetcode_ai_interviewer-0.1.9.zip`, runs `web-ext lint`, and
 keeps the stable Gecko ID:
 
 ```text
@@ -149,12 +153,19 @@ extension.
 8. Click **Start Interview**. The voice interview starts immediately while the
    host verifies the intended solution and prepares private hints in the
    background.
-9. Adjust **Speaker volume** in the extension popup at any time, including while
+9. Choose an **Interviewer voice** before starting. The selection applies to
+   the next interview.
+10. Adjust **Speaker volume** in the extension popup at any time, including while
    the interviewer is speaking.
-10. Speak naturally and interrupt the interviewer when needed.
-11. Edit code normally in LeetCode; debounced full-buffer updates go to the
+11. Say that you are implementing, explaining while coding, or thinking out
+    loud to enter Focus mode, or use **Enter Focus** in the popup. The
+    interviewer remains silent until a direct question, an explicit handoff, or
+    a failed LeetCode Run result.
+12. Ambiguous spoken statements receive a ten-second grace period; direct
+    questions and explicit handoffs may receive a prompt response.
+13. Edit code normally in LeetCode; debounced full-buffer updates go to the
     localhost host.
-12. Click **Stop Interview** when finished.
+14. Click **Stop Interview** when finished.
 
 The host sends the problem to Gemini 3.7 Flash with Google Search enabled while
 the Live interviewer begins its greeting and neutral opening questions. The
@@ -172,15 +183,16 @@ status report the analysis failure separately from the Live session status.
 The host sends the problem, current code when requested by the model tool,
 microphone audio, private interviewer dossier, and conversation context to
 Gemini. The Live session enables server VAD, input/output transcription, native
-audio, interruption, context-window compression, and session resumption. One
+audio, conservative response holding, focus-mode output suppression,
+context-window compression, and session resumption. One
 JSONL log with machine-local timestamps is written under `host/logs/` per
 interview; the private solution dossier, API keys, resumption handles, and raw
 audio are not logged. When the interview ends, the latest JSONL log is converted
 to a readable speaker-labelled transcript under `host/transcripts/`. The
 logical transcript name follows `MM-DD-YYYY---HH:MM` using the timestamp in the
-log filename. Windows does not permit `:` in a normal filename, so Windows
-writes the minute separator as `-` on disk (for example,
-`08-24-2026---08-12`).
+log filename and uses a `.txt` extension. Windows does not permit `:` in a
+normal filename, so Windows writes the minute separator as `-` on disk (for
+example, `08-24-2026---08-12.txt`).
 
 ## Tests and checks
 

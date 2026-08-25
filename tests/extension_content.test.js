@@ -197,3 +197,31 @@ test("content script ignores spoofed page messages from another window", () => {
   );
   assert.equal(harness.messages.length, before);
 });
+
+test("content script attaches authoritative code version to failed Run results", async () => {
+  const harness = loadContent({ description: "Description text. ".repeat(20) });
+  harness.dispatch({
+    source: "leetcode-ai-interviewer-page-bridge",
+    protocolVersion: 1,
+    type: "CODE_SNAPSHOT",
+    payload: { code: "pass", language: "python", modelUri: null, version: 1 },
+  });
+  harness.dispatch({
+    source: "leetcode-ai-interviewer-page-bridge",
+    protocolVersion: 1,
+    type: "RUN_RESULT",
+    payload: {
+      status: "failed",
+      resultSignature: "run-deadbeef",
+      caseLabel: "Case 1",
+      input: "nums=[2,7]",
+      expected: "[0,1]",
+      actual: "[]",
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const result = harness.messages.find((message) => message.type === "RUN_RESULT");
+  assert.equal(result.payload.codeVersion, 1);
+  assert.equal(result.payload.pageUrl, "https://leetcode.com/problems/two-sum/");
+  assert.equal(result.payload.status, "failed");
+});

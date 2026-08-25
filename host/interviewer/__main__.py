@@ -68,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
                 session_starter=manager.start,
                 session_stopper=manager.stop,
                 code_update_logger=manager.log_code_update,
+                mode_change_logger=manager.log_interaction_mode,
+                run_result_handler=manager.handle_run_result,
                 volume_getter=manager.get_volume,
                 volume_setter=manager.set_volume,
             )
@@ -135,6 +137,7 @@ async def _serve_config(config, app, session_manager=None) -> None:
     print("LeetCode AI Interviewer host")
     print(f"Listening on http://{config.local_host}:{config.local_port}")
     print(f"Model: {config.gemini_model}")
+    print(f"Thinking level: {config.gemini_thinking_level}")
     print(f"Audio input: {config.audio_input_device or 'Windows default'}")
     print(f"Audio output: {config.audio_output_device or 'Windows default'}")
     print("Status: ready")

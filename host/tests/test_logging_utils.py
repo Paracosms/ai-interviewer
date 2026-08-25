@@ -89,8 +89,9 @@ def test_transcript_uses_first_timestamp_and_groups_transcription_chunks(
         encoding="utf-8",
     )
 
-    assert transcript_filename(log) == "08-24-2026---08:12"
+    assert transcript_filename(log) == "08-24-2026---08:12.txt"
     transcript = generate_transcript(log, tmp_path / "transcripts")
+    assert transcript.suffix == ".txt"
     expected = (
         "This transcript is based off the log: interview-20260824T081244Z-4dfbaff8.jsonl\n\n"
         "Andrew - 8:40:26\n\n"

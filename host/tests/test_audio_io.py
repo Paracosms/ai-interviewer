@@ -65,6 +65,16 @@ def test_empty_turn_does_not_disable_prebuffering_for_next_turn() -> None:
     assert buffer.read(4) == b""
 
 
+def test_playback_buffer_can_hold_and_release_a_complete_turn() -> None:
+    buffer = PcmPlaybackBuffer(max_bytes=32, prebuffer_bytes=0)
+    buffer.hold()
+    buffer.append(b"response")
+    buffer.finish_turn()
+    assert buffer.read(16) == b""
+    buffer.release()
+    assert buffer.read(16) == b"response"
+
+
 def test_input_queue_drops_oldest_block_when_full() -> None:
     audio = AudioIO(input_queue_size=1)
     audio._accept_input = True
@@ -87,6 +97,22 @@ def test_output_callback_consumes_model_pcm() -> None:
     output = bytearray(b"x" * 8)
     audio._output_callback(output, 4, None, None)
     assert output == b"1234\x00\x00\x00\x00"
+
+
+def test_model_playback_suppresses_microphone_for_acoustic_tail() -> None:
+    now = [10.0]
+    audio = AudioIO(
+        output_buffer_bytes=32,
+        clock=lambda: now[0],
+        microphone_tail_seconds=0.3,
+    )
+    audio.write_model_audio(b"1234")
+    audio.finish_model_turn()
+    output = bytearray(4)
+    audio._output_callback(output, 2, None, None)
+    assert audio.should_forward_microphone() is False
+    now[0] = 10.31
+    assert audio.should_forward_microphone() is True
 
 
 def test_output_callback_applies_speaker_volume_without_changing_pcm_shape() -> None:

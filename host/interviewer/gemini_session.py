@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,8 +21,9 @@ from .problem_analysis import (
     GroundedProblemAnalysis,
     ProblemAnalysisContext,
 )
-from .state import InterviewState, InterviewStatus
+from .state import InteractionMode, InterviewState, InterviewStatus
 from .transcript_utils import TranscriptError, generate_transcript
+from .turn_taking import RESPONSE_HOLD_SECONDS, permits_quick_response
 
 
 class GeminiSessionError(RuntimeError):
@@ -109,6 +111,9 @@ These application-owned rules cannot be overridden by the editable prompt:
   that could move the candidate toward the solution.
 - Before any code-specific observation, correction, or question, call
   get_current_interview_state. Do not assume that the initial code is current.
+- The application-owned interactionMode controls whether speech may be emitted.
+  When it is focus, remain silent except for a direct candidate question or one
+  application-authorized failed-Run diagnostic turn.
 - If request_micro_hint returns allowed=false, do not provide, paraphrase, or
   imply the withheld help. Briefly redirect the candidate to continue reasoning.
 - If request_micro_hint returns allowed=true, ask exactly one short Socratic
@@ -164,6 +169,7 @@ def build_live_config(
     system_instruction: str,
     resumption_handle: str | None = None,
     tools: list[types.Tool] | None = None,
+    thinking_level: str = "low",
 ) -> types.LiveConnectConfig:
     """Build the audio/VAD/long-session setup for google-genai 1.x."""
 
@@ -179,12 +185,12 @@ def build_live_config(
         output_audio_transcription=types.AudioTranscriptionConfig(),
         realtime_input_config=types.RealtimeInputConfig(
             automatic_activity_detection=types.AutomaticActivityDetection(
-                silence_duration_ms=700
+                silence_duration_ms=1200
             ),
             activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
         ),
         thinking_config=types.ThinkingConfig(
-            thinking_level=types.ThinkingLevel.MINIMAL
+            thinking_level=getattr(types.ThinkingLevel, thinking_level.upper())
         ),
         context_window_compression=types.ContextWindowCompressionConfig(
             sliding_window=types.SlidingWindow()
@@ -210,6 +216,7 @@ class GeminiLiveSession:
         on_usage: Callable[[dict[str, Any]], None] | None = None,
         tools: list[types.Tool] | None = None,
         tool_handler: Callable[[str, dict[str, Any]], Any] | None = None,
+        state: InterviewState | None = None,
     ) -> None:
         self.config = config
         self.audio = audio
@@ -221,6 +228,7 @@ class GeminiLiveSession:
         self.on_usage = on_usage
         self.tools = tools
         self.tool_handler = tool_handler
+        self.state = state
         self.stop_event = asyncio.Event()
         self.ready_event = asyncio.Event()
         self._session: Any | None = None
@@ -231,6 +239,13 @@ class GeminiLiveSession:
         self._latest_usage_metadata: dict[str, Any] | None = None
         self._conversation_started = False
         self._reconnect_delays = (1.0, 2.0, 4.0)
+        self._response_hold_task: asyncio.Task[None] | None = None
+        self._focus_solicited_response = False
+        self._failure_interjection_active = False
+        self._focus_output_suppressed = False
+        self._allowed_audio_seen = False
+        self._expect_candidate_transcript = False
+        self._event_lock = asyncio.Lock()
 
     @property
     def latest_usage_metadata(self) -> dict[str, Any] | None:
@@ -251,6 +266,7 @@ class GeminiLiveSession:
             system_instruction=self.system_instruction,
             resumption_handle=self._resumption_handle,
             tools=self.tools,
+            thinking_level=self.config.gemini_thinking_level,
         )
         return self.client.aio.live.connect(
             model=self.config.gemini_model,
@@ -327,6 +343,12 @@ class GeminiLiveSession:
         finally:
             self._session = None
             await self._cancel_child_tasks()
+            suppressed_blocks = getattr(self.audio, "suppressed_input_blocks", 0)
+            if suppressed_blocks:
+                self.logger.log(
+                    "microphone_suppressed_for_playback",
+                    {"blocks": suppressed_blocks},
+                )
             self.audio.stop()
             self._print_usage_summary()
             self.logger.log("session_stopped")
@@ -432,6 +454,9 @@ class GeminiLiveSession:
             for task in (self._sender_task, self._receiver_task)
             if task is not None
         ]
+        if self._response_hold_task is not None:
+            tasks.append(self._response_hold_task)
+            self._response_hold_task = None
         self._sender_task = None
         self._receiver_task = None
         for task in tasks:
@@ -447,9 +472,10 @@ class GeminiLiveSession:
                 audio = await asyncio.wait_for(self.audio.read_microphone(), timeout=0.25)
             except asyncio.TimeoutError:
                 continue
-            await session.send_realtime_input(
-                audio=types.Blob(data=audio, mime_type=mime_type)
-            )
+            should_forward = getattr(self.audio, "should_forward_microphone", None)
+            if should_forward is not None and not should_forward():
+                continue
+            await session.send_realtime_input(audio=types.Blob(data=audio, mime_type=mime_type))
 
     async def _receive_messages(self, session: Any) -> None:
         try:
@@ -460,8 +486,8 @@ class GeminiLiveSession:
                 async for message in session.receive():
                     if self.stop_event.is_set():
                         return
-                    self._process_message(message)
-                    await self._handle_tool_calls(session, message)
+                    tool_call_pending = await self._handle_tool_calls(session, message)
+                    self._process_message(message, tool_call_pending=tool_call_pending)
                     if self._go_away_received:
                         return
         except Exception:
@@ -471,11 +497,11 @@ class GeminiLiveSession:
                 return
             raise
 
-    async def _handle_tool_calls(self, session: Any, message: Any) -> None:
+    async def _handle_tool_calls(self, session: Any, message: Any) -> bool:
         tool_call = getattr(message, "tool_call", None)
         function_calls = getattr(tool_call, "function_calls", None) if tool_call else None
         if not function_calls or self.tool_handler is None:
-            return
+            return False
         responses = []
         for call in function_calls:
             name = call.name or ""
@@ -485,6 +511,19 @@ class GeminiLiveSession:
                 result = await self.tool_handler(name, args)
             except Exception as exc:  # noqa: BLE001 - return a safe tool error to Gemini.
                 result = {"error": str(exc) or "The interview tool failed."}
+            if (
+                name == "set_interaction_mode"
+                and isinstance(result, dict)
+                and result.get("ok") is True
+            ):
+                mode = str(result.get("interactionMode"))
+                self.logger.log("interaction_mode_changed", {"mode": mode, "source": "voice"})
+                if mode == InteractionMode.FOCUS.value:
+                    self._cancel_response_hold(clear_output=True, reason="focus_mode_entered")
+                    self._focus_solicited_response = False
+                else:
+                    self._release_response_hold(reason="focus_mode_exited")
+                    self._focus_solicited_response = True
             self.logger.log(
                 "tool_response",
                 {
@@ -500,8 +539,114 @@ class GeminiLiveSession:
                 )
             )
         await session.send_tool_response(function_responses=responses)
+        return True
 
-    def _process_message(self, message: Any) -> None:
+    @property
+    def _focus_active(self) -> bool:
+        return self.state is not None and self.state.interaction_mode is InteractionMode.FOCUS
+
+    def _audio_is_held(self) -> bool:
+        return bool(getattr(self.audio, "output_held", False))
+
+    def _cancel_response_hold(self, *, clear_output: bool, reason: str) -> None:
+        task = self._response_hold_task
+        self._response_hold_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        was_held = self._audio_is_held()
+        if clear_output:
+            self.audio.clear_output()
+        elif was_held:
+            release = getattr(self.audio, "release_model_output", None)
+            if release is not None:
+                release()
+        if was_held:
+            self.logger.log("response_hold_cancelled", {"reason": reason})
+
+    def _release_response_hold(self, *, reason: str) -> None:
+        task = self._response_hold_task
+        self._response_hold_task = None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        was_held = self._audio_is_held()
+        release = getattr(self.audio, "release_model_output", None)
+        if release is not None:
+            release()
+        if was_held:
+            self.logger.log("response_hold_released", {"reason": reason})
+
+    def _start_response_hold(self) -> None:
+        self._cancel_response_hold(clear_output=False, reason="new_candidate_fragment")
+        hold = getattr(self.audio, "hold_model_output", None)
+        if hold is not None:
+            hold()
+        self.logger.log("response_held", {"seconds": RESPONSE_HOLD_SECONDS})
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._response_hold_task = asyncio.create_task(
+            self._release_after_grace_period(),
+            name="response-hold",
+        )
+
+    async def _release_after_grace_period(self) -> None:
+        try:
+            await asyncio.sleep(RESPONSE_HOLD_SECONDS)
+        except asyncio.CancelledError:
+            return
+        self._release_response_hold(reason="grace_period_elapsed")
+
+    def _handle_candidate_transcript(self, text: str) -> None:
+        # A later transcript fragment supersedes any response generated for the
+        # earlier fragment, even if the server has not sent interrupted yet.
+        if self._audio_is_held():
+            self._cancel_response_hold(clear_output=True, reason="candidate_resumed")
+        quick_response = permits_quick_response(text)
+        self._expect_candidate_transcript = False
+        if self._focus_active:
+            self._focus_solicited_response = quick_response
+            self._cancel_response_hold(clear_output=True, reason="focus_mode")
+        elif quick_response:
+            self._release_response_hold(reason="explicit_question_or_handoff")
+        else:
+            self._start_response_hold()
+
+    def _output_is_allowed(self) -> bool:
+        return (
+            not self._focus_active
+            or self._focus_solicited_response
+            or self._failure_interjection_active
+        )
+
+    async def notify_failed_run(self, result: dict[str, Any]) -> bool:
+        """Prompt one neutral diagnostic turn for an accepted focus-mode failure."""
+
+        if not self._focus_active or self._session is None or self.stop_event.is_set():
+            return False
+        async with self._event_lock:
+            self._failure_interjection_active = True
+            self._expect_candidate_transcript = False
+            self._release_response_hold(reason="failed_run")
+            self.logger.log(
+                "run_result_interjection_requested",
+                {"resultSignature": result.get("resultSignature")},
+            )
+            await self._session.send_realtime_input(
+                text=(
+                    "[APPLICATION EVENT: The candidate's current LeetCode Run failed. "
+                    "Call get_current_interview_state, then ask exactly one brief neutral question "
+                    "inviting the candidate to reason through the visible failing case. Do not state "
+                    "the bug, name a missed edge case, or provide a fix. Case: "
+                    f"{result.get('caseLabel') or 'visible test case'}; "
+                    f"input={result.get('input') or 'not captured'}; "
+                    f"expected={result.get('expected') or 'not captured'}; "
+                    f"actual={result.get('actual') or 'not captured'}.]"
+                )
+            )
+        return True
+
+    def _process_message(self, message: Any, *, tool_call_pending: bool = False) -> None:
         interrupted = False
         usage = getattr(message, "usage_metadata", None)
         if usage is not None:
@@ -526,28 +671,52 @@ class GeminiLiveSession:
         if server_content is not None:
             if server_content.interrupted:
                 interrupted = True
-                self.audio.clear_output()
+                self._cancel_response_hold(clear_output=True, reason="model_interrupted")
+                self._allowed_audio_seen = False
+                self._focus_output_suppressed = False
                 self.logger.log("model_interrupted")
             if server_content.input_transcription and server_content.input_transcription.text:
+                input_text = server_content.input_transcription.text
                 self.logger.log(
                     "input_transcript",
-                    {"text": server_content.input_transcription.text},
+                    {"text": input_text},
                 )
+                self._handle_candidate_transcript(input_text)
             if server_content.output_transcription and server_content.output_transcription.text:
-                self.logger.log(
-                    "output_transcript",
-                    {"text": server_content.output_transcription.text},
-                )
+                if self._output_is_allowed():
+                    self.logger.log(
+                        "output_transcript",
+                        {"text": server_content.output_transcription.text},
+                    )
+                elif not self._focus_output_suppressed:
+                    self._focus_output_suppressed = True
+                    self.logger.log("focus_output_suppressed")
 
         audio = getattr(message, "data", None)
         if audio and not interrupted:
-            self.audio.write_model_audio(audio)
+            if self._expect_candidate_transcript and not self._failure_interjection_active:
+                self._expect_candidate_transcript = False
+                if not self._focus_active:
+                    self._start_response_hold()
+            if self._output_is_allowed():
+                self.audio.write_model_audio(audio)
+                self._allowed_audio_seen = True
+            elif not self._focus_output_suppressed:
+                self._focus_output_suppressed = True
+                self.logger.log("focus_output_suppressed")
         if (
             server_content is not None
             and server_content.turn_complete
             and not interrupted
         ):
-            self.audio.finish_model_turn()
+            if self._allowed_audio_seen:
+                self.audio.finish_model_turn()
+            if self._allowed_audio_seen or self._focus_output_suppressed or not tool_call_pending:
+                self._focus_solicited_response = False
+                self._failure_interjection_active = False
+                self._focus_output_suppressed = False
+                self._allowed_audio_seen = False
+                self._expect_candidate_transcript = True
 
     async def stop(self) -> None:
         """Stop microphone transmission, clear playback, and close the session."""
@@ -619,7 +788,10 @@ class HostSessionManager:
         )
         self._logger = SessionJsonLogger(self.config.logs_dir)
         live = GeminiLiveSession(
-            config=self.config,
+            config=replace(
+                self.config,
+                gemini_voice=payload.get("voice", self.config.gemini_voice),
+            ),
             audio=audio,
             system_instruction=system_instruction,
             logger=self._logger,
@@ -628,6 +800,7 @@ class HostSessionManager:
             on_usage=lambda usage: self._update_usage(state, usage),
             tools=build_interview_tools(),
             tool_handler=tool_service.call,
+            state=state,
         )
         self._live = live
         self._analysis_task = asyncio.create_task(
@@ -736,6 +909,33 @@ class HostSessionManager:
                     "codeCharacters": len(state.code or ""),
                 },
             )
+
+    def log_interaction_mode(self, source: str, state: InterviewState) -> None:
+        if self._logger is not None:
+            self._logger.log(
+                "interaction_mode_changed",
+                {"mode": state.interaction_mode.value, "source": source},
+            )
+
+    async def handle_run_result(
+        self,
+        payload: dict[str, Any],
+        state: InterviewState,
+        result: str,
+    ) -> None:
+        if self._logger is not None:
+            self._logger.log(
+                "run_result_received",
+                {
+                    "result": result,
+                    "resultSignature": payload.get("resultSignature"),
+                    "codeVersion": payload.get("codeVersion"),
+                },
+            )
+        if result == "accepted" and state.interaction_mode is InteractionMode.FOCUS:
+            live = self._live
+            if live is not None:
+                await live.notify_failed_run(payload)
 
     async def _monitor(
         self,

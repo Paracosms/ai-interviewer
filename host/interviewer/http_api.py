@@ -11,9 +11,14 @@ from typing import Any, Awaitable, Callable, Mapping
 from aiohttp import web
 
 from . import HOST_VERSION, PROTOCOL_VERSION
-from .config import HostConfig
+from .config import DEFAULT_GEMINI_VOICE, HostConfig, SUPPORTED_GEMINI_VOICES
 from .hint_gate import HintGate
-from .state import InterviewState, InterviewStatus, ProblemChangedError, StateError
+from .state import (
+    InterviewState,
+    InterviewStatus,
+    ProblemChangedError,
+    StateError,
+)
 
 MAXIMUMS = {
     "pageUrl": 2_000,
@@ -22,6 +27,11 @@ MAXIMUMS = {
     "problemText": 100_000,
     "language": 100,
     "code": 50_000,
+    "resultSignature": 256,
+    "caseLabel": 500,
+    "input": 10_000,
+    "expected": 10_000,
+    "actual": 10_000,
 }
 
 ALLOWED_EXTENSION_ORIGIN_PREFIX = "moz-extension://"
@@ -46,6 +56,8 @@ class HostRuntime:
     session_starter: Callable[[dict[str, Any], InterviewState], Awaitable[None]] | None = None
     session_stopper: Callable[[], Awaitable[None]] | None = None
     code_update_logger: Callable[[str, InterviewState], None] | None = None
+    mode_change_logger: Callable[[str, InterviewState], None] | None = None
+    run_result_handler: Callable[[dict[str, Any], InterviewState, str], Awaitable[None]] | None = None
     volume_getter: Callable[[], float] | None = None
     volume_setter: Callable[[float], None] | None = None
     volume: float = 1.0
@@ -151,7 +163,11 @@ def validate_volume_payload(payload: Mapping[str, Any]) -> float:
     return float(value)
 
 
-def validate_start_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def validate_start_payload(
+    payload: Mapping[str, Any],
+    *,
+    default_voice: str = DEFAULT_GEMINI_VOICE,
+) -> dict[str, Any]:
     _require_protocol(payload)
     page_url = _required_text(payload, "pageUrl")
     if not page_url.startswith("https://leetcode.com/problems/"):
@@ -159,6 +175,9 @@ def validate_start_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     problem_text = _required_text(payload, "problemText")
     if len(problem_text.strip()) < 200:
         raise ApiError("problemText must contain at least 200 characters.")
+    voice = payload.get("voice", default_voice)
+    if not isinstance(voice, str) or voice not in SUPPORTED_GEMINI_VOICES:
+        raise ApiError("voice must be one of the supported Gemini voices.")
     return {
         "protocolVersion": PROTOCOL_VERSION,
         "pageUrl": page_url,
@@ -168,6 +187,7 @@ def validate_start_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "language": _required_text(payload, "language"),
         "code": _required_text(payload, "code"),
         "codeVersion": _required_code_version(payload),
+        "voice": voice,
     }
 
 
@@ -182,6 +202,43 @@ def validate_code_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "language": _required_text(payload, "language"),
         "code": _required_text(payload, "code"),
         "codeVersion": _required_code_version(payload),
+    }
+
+
+def validate_mode_payload(payload: Mapping[str, Any]) -> str:
+    _require_protocol(payload)
+    mode = payload.get("mode")
+    if mode not in {"conversation", "focus"}:
+        raise ApiError("mode must be conversation or focus.")
+    return str(mode)
+
+
+def _optional_bounded_text(payload: Mapping[str, Any], key: str) -> str:
+    value = payload.get(key, "")
+    if not isinstance(value, str):
+        raise ApiError(f"{key} must be a string.")
+    if len(value) > MAXIMUMS[key]:
+        raise ApiError(f"{key} exceeds the maximum length of {MAXIMUMS[key]} characters.")
+    return value
+
+
+def validate_run_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    _require_protocol(payload)
+    page_url = _required_text(payload, "pageUrl")
+    if not page_url.startswith("https://leetcode.com/problems/"):
+        raise ApiError("pageUrl must be an HTTPS LeetCode problem URL.")
+    if payload.get("status") != "failed":
+        raise ApiError("Only failed Run results are accepted.")
+    return {
+        "protocolVersion": PROTOCOL_VERSION,
+        "pageUrl": page_url,
+        "codeVersion": _required_code_version(payload),
+        "status": "failed",
+        "resultSignature": _required_text(payload, "resultSignature"),
+        "caseLabel": _optional_bounded_text(payload, "caseLabel"),
+        "input": _optional_bounded_text(payload, "input"),
+        "expected": _optional_bounded_text(payload, "expected"),
+        "actual": _optional_bounded_text(payload, "actual"),
     }
 
 
@@ -218,7 +275,14 @@ async def session_status(request: web.Request) -> web.Response:
 async def session_start(request: web.Request) -> web.Response:
     runtime = _runtime(request)
     try:
-        payload = validate_start_payload(await _read_json(request))
+        payload = validate_start_payload(
+            await _read_json(request),
+            default_voice=(
+                runtime.config.gemini_voice
+                if runtime.config.gemini_voice in SUPPORTED_GEMINI_VOICES
+                else DEFAULT_GEMINI_VOICE
+            ),
+        )
     except ApiError as exc:
         return _json_response({"ok": False, "error": exc.message}, status=exc.status, origin=request.headers.get("Origin"))
 
@@ -301,6 +365,44 @@ async def session_code(request: web.Request) -> web.Response:
     return _json_response({"ok": True, "result": result.value}, origin=request.headers.get("Origin"))
 
 
+async def session_mode(request: web.Request) -> web.Response:
+    runtime = _runtime(request)
+    try:
+        mode = validate_mode_payload(await _read_json(request))
+    except ApiError as exc:
+        return _json_response({"ok": False, "error": exc.message}, status=exc.status, origin=request.headers.get("Origin"))
+    async with runtime.lock:  # type: ignore[arg-type]
+        try:
+            resolved = runtime.state.set_interaction_mode(mode)
+        except StateError as exc:
+            return _json_response({"ok": False, "error": str(exc)}, status=409, origin=request.headers.get("Origin"))
+    if runtime.mode_change_logger is not None:
+        runtime.mode_change_logger("popup", runtime.state)
+    return _json_response(
+        {"ok": True, "interactionMode": resolved.value},
+        origin=request.headers.get("Origin"),
+    )
+
+
+async def session_run_result(request: web.Request) -> web.Response:
+    runtime = _runtime(request)
+    try:
+        payload = validate_run_result_payload(await _read_json(request))
+    except ApiError as exc:
+        return _json_response({"ok": False, "error": exc.message}, status=exc.status, origin=request.headers.get("Origin"))
+    async with runtime.lock:  # type: ignore[arg-type]
+        try:
+            result = runtime.state.accept_failed_run_result(payload)
+        except StateError as exc:
+            return _json_response({"ok": False, "error": str(exc)}, status=409, origin=request.headers.get("Origin"))
+    if runtime.run_result_handler is not None:
+        await runtime.run_result_handler(payload, runtime.state, result.value)
+    return _json_response(
+        {"ok": True, "result": result.value},
+        origin=request.headers.get("Origin"),
+    )
+
+
 async def session_stop(request: web.Request) -> web.Response:
     runtime = _runtime(request)
     async with runtime.lock:  # type: ignore[arg-type]
@@ -363,6 +465,8 @@ def create_app(
     session_starter: Callable[[dict[str, Any], InterviewState], Awaitable[None]] | None = None,
     session_stopper: Callable[[], Awaitable[None]] | None = None,
     code_update_logger: Callable[[str, InterviewState], None] | None = None,
+    mode_change_logger: Callable[[str, InterviewState], None] | None = None,
+    run_result_handler: Callable[[dict[str, Any], InterviewState, str], Awaitable[None]] | None = None,
     volume_getter: Callable[[], float] | None = None,
     volume_setter: Callable[[float], None] | None = None,
 ) -> web.Application:
@@ -375,6 +479,8 @@ def create_app(
         session_starter=session_starter,
         session_stopper=session_stopper,
         code_update_logger=code_update_logger,
+        mode_change_logger=mode_change_logger,
+        run_result_handler=run_result_handler,
         volume_getter=volume_getter,
         volume_setter=volume_setter,
     )
@@ -384,6 +490,8 @@ def create_app(
     app.router.add_get("/session/status", session_status)
     app.router.add_post("/session/start", session_start)
     app.router.add_post("/session/code", session_code)
+    app.router.add_post("/session/mode", session_mode)
+    app.router.add_post("/session/run-result", session_run_result)
     app.router.add_post("/session/stop", session_stop)
     app.router.add_get("/audio/volume", audio_volume)
     app.router.add_post("/audio/volume", audio_volume)

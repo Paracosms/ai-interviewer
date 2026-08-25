@@ -10,16 +10,6 @@
   <main class="panel">
     <h1>LeetCode AI Interviewer</h1>
 
-    <section class="settings" aria-labelledby="settings-heading">
-      <h2 id="settings-heading">Host port</h2>
-      <div class="port-row">
-        <label for="host-port">Port</label>
-        <input id="host-port" type="number" min="1" max="65535" step="1" inputmode="numeric">
-        <button id="save-port" type="button">Save</button>
-      </div>
-      <p id="port-message" class="message" role="status"></p>
-    </section>
-
     <section class="settings audio-settings" aria-labelledby="audio-heading">
       <h2 id="audio-heading">Audio</h2>
       <div class="volume-row">
@@ -28,26 +18,81 @@
       </div>
       <input id="volume" type="range" min="0" max="100" step="1" value="100">
       <p id="volume-message" class="message" role="status"></p>
+      <label class="voice-label" for="voice">Interviewer voice</label>
+      <select id="voice">
+        <option value="Zephyr">Zephyr — Bright</option>
+        <option value="Puck">Puck — Upbeat</option>
+        <option value="Charon">Charon — Informative</option>
+        <option value="Kore" selected>Kore — Firm</option>
+        <option value="Fenrir">Fenrir — Excitable</option>
+        <option value="Leda">Leda — Youthful</option>
+        <option value="Orus">Orus — Firm</option>
+        <option value="Aoede">Aoede — Breezy</option>
+        <option value="Callirrhoe">Callirrhoe — Easy-going</option>
+        <option value="Autonoe">Autonoe — Bright</option>
+        <option value="Enceladus">Enceladus — Breathy</option>
+        <option value="Iapetus">Iapetus — Clear</option>
+        <option value="Umbriel">Umbriel — Easy-going</option>
+        <option value="Algieba">Algieba — Smooth</option>
+        <option value="Despina">Despina — Smooth</option>
+        <option value="Erinome">Erinome — Clear</option>
+        <option value="Algenib">Algenib — Gravelly</option>
+        <option value="Rasalgethi">Rasalgethi — Informative</option>
+        <option value="Laomedeia">Laomedeia — Upbeat</option>
+        <option value="Achernar">Achernar — Soft</option>
+        <option value="Alnilam">Alnilam — Firm</option>
+        <option value="Schedar">Schedar — Even</option>
+        <option value="Gacrux">Gacrux — Mature</option>
+        <option value="Pulcherrima">Pulcherrima — Forward</option>
+        <option value="Achird">Achird — Friendly</option>
+        <option value="Zubenelgenubi">Zubenelgenubi — Casual</option>
+        <option value="Vindemiatrix">Vindemiatrix — Gentle</option>
+        <option value="Sadachbia">Sadachbia — Lively</option>
+        <option value="Sadaltager">Sadaltager — Knowledgeable</option>
+        <option value="Sulafat">Sulafat — Warm</option>
+      </select>
+      <p id="voice-message" class="message" role="status">Applies to the next interview.</p>
     </section>
 
-    <dl class="status-list">
-      <div><dt>Local host</dt><dd id="host-status">Checking…</dd></div>
-      <div><dt>LeetCode problem</dt><dd id="problem-status">Checking…</dd></div>
-      <div><dt>Title</dt><dd id="problem-title">—</dd></div>
-      <div><dt>Language</dt><dd id="language">—</dd></div>
-      <div><dt>Code</dt><dd id="code-length">—</dd></div>
-      <div><dt>Interview</dt><dd id="interview-status">Checking…</dd></div>
-      <div><dt>Elapsed</dt><dd id="elapsed">—</dd></div>
-      <div><dt>Hints</dt><dd id="hint-status">—</dd></div>
-      <div><dt>Last error</dt><dd id="last-error">—</dd></div>
-    </dl>
-
-    <div class="actions">
+    <div class="actions" aria-label="Interview controls">
       <button id="start-interview" class="primary" type="button">Start Interview</button>
       <button id="stop-interview" class="danger" type="button">Stop Interview</button>
-      <button id="refresh-status" type="button">Refresh Status</button>
+      <button id="toggle-focus" type="button">Enter Focus</button>
     </div>
     <p id="action-message" class="message" role="status"></p>
+
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <div class="advanced-content">
+        <section class="settings" aria-labelledby="settings-heading">
+          <h2 id="settings-heading">Host port</h2>
+          <div class="port-row">
+            <label for="host-port">Port</label>
+            <input id="host-port" type="number" min="1" max="65535" step="1" inputmode="numeric">
+            <button id="save-port" type="button">Save</button>
+          </div>
+          <p id="port-message" class="message" role="status"></p>
+        </section>
+
+        <section aria-labelledby="status-heading">
+          <h2 id="status-heading">Status</h2>
+          <dl class="status-list">
+            <div><dt>Local host</dt><dd id="host-status">Checking…</dd></div>
+            <div><dt>LeetCode problem</dt><dd id="problem-status">Checking…</dd></div>
+            <div><dt>Title</dt><dd id="problem-title">—</dd></div>
+            <div><dt>Language</dt><dd id="language">—</dd></div>
+            <div><dt>Code</dt><dd id="code-length">—</dd></div>
+            <div><dt>Interview</dt><dd id="interview-status">Checking…</dd></div>
+            <div><dt>Interaction mode</dt><dd id="interaction-mode">—</dd></div>
+            <div><dt>Elapsed</dt><dd id="elapsed">—</dd></div>
+            <div><dt>Hints</dt><dd id="hint-status">—</dd></div>
+            <div><dt>Last error</dt><dd id="last-error">—</dd></div>
+          </dl>
+        </section>
+
+        <button id="refresh-status" class="refresh-status" type="button">Refresh Status</button>
+      </div>
+    </details>
   </main>
   <script src="popup.js"></script>
 </body>

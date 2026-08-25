@@ -48,7 +48,7 @@ def transcript_filename(log_path: str | Path) -> str:
         )
     except ValueError as exc:
         raise TranscriptError(f"Log filename contains an invalid timestamp: {name}") from exc
-    return started_at.strftime("%m-%d-%Y---%H:%M")
+    return f"{started_at.strftime('%m-%d-%Y---%H:%M')}.txt"
 
 
 def _actual_filename(requested_name: str) -> str:

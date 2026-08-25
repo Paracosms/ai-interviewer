@@ -65,10 +65,10 @@ def ready_analysis_context():
     return context
 
 
-def test_only_the_two_required_tools_are_declared() -> None:
+def test_required_interview_tools_are_declared() -> None:
     tools = build_interview_tools()
     names = [declaration.name for declaration in tools[0].function_declarations]
-    assert names == ["get_current_interview_state", "request_micro_hint"]
+    assert names == ["get_current_interview_state", "request_micro_hint", "set_interaction_mode"]
 
 
 def test_current_state_tool_returns_latest_code() -> None:
@@ -85,6 +85,17 @@ def test_current_state_tool_returns_latest_code() -> None:
     assert result["code"] == "latest"
     assert result["codeVersion"] == 2
     assert result["secondsSinceCodeChange"] == 10
+    assert result["interactionMode"] == "conversation"
+
+
+def test_mode_tool_persists_focus_mode() -> None:
+    state = make_state()
+    service = InterviewToolService(state, HintGate())
+    assert service.set_interaction_mode({"mode": "focus"}) == {
+        "ok": True,
+        "interactionMode": "focus",
+    }
+    assert service.get_current_interview_state()["interactionMode"] == "focus"
 
 
 def test_hint_tool_enforces_unlock_and_cooldown() -> None:

@@ -19,6 +19,11 @@ class InterviewStatus(str, Enum):
     ERROR = "error"
 
 
+class InteractionMode(str, Enum):
+    CONVERSATION = "conversation"
+    FOCUS = "focus"
+
+
 class StateError(ValueError):
     """Raised when an operation would make interview state inconsistent."""
 
@@ -32,6 +37,12 @@ class CodeUpdateResult(str, Enum):
     LANGUAGE_UPDATED = "language_updated"
     IGNORED_DUPLICATE = "ignored_duplicate"
     IGNORED_OLDER = "ignored_older"
+
+
+class RunResultUpdate(str, Enum):
+    ACCEPTED = "accepted"
+    IGNORED_DUPLICATE = "ignored_duplicate"
+    IGNORED_STALE = "ignored_stale"
 
 
 @dataclass(slots=True)
@@ -54,6 +65,8 @@ class InterviewState:
     latest_usage_metadata: dict[str, Any] | None = None
     problem_analysis_status: str = "unavailable"
     problem_analysis_error: str | None = None
+    interaction_mode: InteractionMode = InteractionMode.CONVERSATION
+    latest_run_result: dict[str, Any] | None = None
 
     @property
     def is_active(self) -> bool:
@@ -100,6 +113,8 @@ class InterviewState:
         self.latest_usage_metadata = None
         self.problem_analysis_status = "pending"
         self.problem_analysis_error = None
+        self.interaction_mode = InteractionMode.CONVERSATION
+        self.latest_run_result = None
 
     def mark_running(self, *, gemini_connected: bool = True) -> None:
         if not self.is_active:
@@ -165,7 +180,31 @@ class InterviewState:
         self.code_version = code_version
         if code_changed:
             self.last_code_change_at = timestamp
+            self.latest_run_result = None
         return CodeUpdateResult.APPLIED
+
+    def set_interaction_mode(self, mode: str | InteractionMode) -> InteractionMode:
+        if not self.is_active:
+            raise StateError("No interview is currently running.")
+        try:
+            resolved = mode if isinstance(mode, InteractionMode) else InteractionMode(mode)
+        except ValueError as exc:
+            raise StateError("Interaction mode must be conversation or focus.") from exc
+        self.interaction_mode = resolved
+        return resolved
+
+    def accept_failed_run_result(self, result: dict[str, Any]) -> RunResultUpdate:
+        """Store a current, deduplicated failed Run result."""
+
+        if not self.is_active:
+            raise StateError("No interview is currently running.")
+        if result.get("pageUrl") != self.problem_url or result.get("codeVersion") != self.code_version:
+            return RunResultUpdate.IGNORED_STALE
+        signature = result.get("resultSignature")
+        if self.latest_run_result and self.latest_run_result.get("resultSignature") == signature:
+            return RunResultUpdate.IGNORED_DUPLICATE
+        self.latest_run_result = dict(result)
+        return RunResultUpdate.ACCEPTED
 
     def stop(self, *, error: str | None = None) -> None:
         """Clear live interview context after the session has been stopped."""
@@ -186,6 +225,8 @@ class InterviewState:
         self.latest_usage_metadata = None
         self.problem_analysis_status = "unavailable"
         self.problem_analysis_error = None
+        self.interaction_mode = InteractionMode.CONVERSATION
+        self.latest_run_result = None
 
     def elapsed_seconds(self, *, now: float | None = None) -> float:
         if self.started_at_monotonic is None:
@@ -235,4 +276,5 @@ class InterviewState:
             "lastError": self.last_error,
             "problemAnalysisStatus": self.problem_analysis_status,
             "problemAnalysisError": self.problem_analysis_error,
+            "interactionMode": self.interaction_mode.value,
         }

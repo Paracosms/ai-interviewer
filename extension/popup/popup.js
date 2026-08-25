@@ -11,17 +11,21 @@
     volume: $("volume"),
     volumeValue: $("volume-value"),
     volumeMessage: $("volume-message"),
+    voice: $("voice"),
+    voiceMessage: $("voice-message"),
     hostStatus: $("host-status"),
     problemStatus: $("problem-status"),
     problemTitle: $("problem-title"),
     language: $("language"),
     codeLength: $("code-length"),
     interviewStatus: $("interview-status"),
+    interactionMode: $("interaction-mode"),
     elapsed: $("elapsed"),
     hintStatus: $("hint-status"),
     lastError: $("last-error"),
     start: $("start-interview"),
     stop: $("stop-interview"),
+    toggleFocus: $("toggle-focus"),
     refresh: $("refresh-status"),
     actionMessage: $("action-message"),
   };
@@ -35,6 +39,7 @@
   let statusRefreshPromise = null;
   let volumeEditing = false;
   let volumeRequestTimer = null;
+  let voiceEditing = false;
 
   function showMessage(element, text = "") {
     element.textContent = text;
@@ -92,6 +97,8 @@
       ? `${pageState.code.length} chars`
       : "—";
     elements.interviewStatus.textContent = hostStatus.status || "Unknown";
+    const interactionMode = hostStatus.interactionMode || "conversation";
+    elements.interactionMode.textContent = interactionMode === "focus" ? "Focus" : "Conversation";
     elements.elapsed.textContent = hostStatus.running
       ? formatElapsed(displayedElapsedSeconds())
       : "—";
@@ -102,10 +109,13 @@
         : (hostStatus.hintsEligible ? "Eligible" : "Locked"));
     elements.lastError.textContent = hostStatus.lastError || hostStatus.problemAnalysisError || "—";
     elements.volumeValue.textContent = `${elements.volume.value}%`;
+    elements.voice.disabled = hostStatus.running;
 
     const canStart = hostHealth.ok && hostStatus.ok && problemDetected() && !hostStatus.running && ["stopped", "error"].includes(hostStatus.status);
     elements.start.disabled = !canStart;
     elements.stop.disabled = !hostStatus.running && hostStatus.status !== "starting" && hostStatus.status !== "reconnecting";
+    elements.toggleFocus.disabled = !hostStatus.running || hostStatus.status !== "running";
+    elements.toggleFocus.textContent = interactionMode === "focus" ? "Resume Conversation" : "Enter Focus";
   }
 
   function applyVolumeResponse(response) {
@@ -114,6 +124,13 @@
     }
     elements.volume.value = String(Math.round(Math.max(0, Math.min(1, response.volume)) * 100));
     elements.volumeValue.textContent = `${elements.volume.value}%`;
+  }
+
+  function applyVoiceResponse(response) {
+    if (!response?.ok || typeof response.voice !== "string") {
+      return;
+    }
+    elements.voice.value = response.voice;
   }
 
   async function findActiveTab() {
@@ -157,6 +174,7 @@
         browser.runtime.sendMessage({ type: "HOST_HEALTH" }),
         browser.runtime.sendMessage({ type: "GET_HOST_STATUS" }),
         browser.runtime.sendMessage({ type: "GET_AUDIO_VOLUME" }),
+        browser.runtime.sendMessage({ type: "GET_GEMINI_VOICE" }),
         refreshPageState(),
       ]);
       const portResult = results[0];
@@ -168,6 +186,9 @@
       if (!volumeEditing && volumeRequestTimer === null) {
         applyVolumeResponse(results[3]);
       }
+      if (!voiceEditing) {
+        applyVoiceResponse(results[4]);
+      }
       render();
     })();
     try {
@@ -175,6 +196,19 @@
     } finally {
       statusRefreshPromise = null;
     }
+  }
+
+  async function saveVoice() {
+    showMessage(elements.voiceMessage, "");
+    const response = await browser.runtime.sendMessage({
+      type: "SAVE_GEMINI_VOICE",
+      voice: elements.voice.value,
+    });
+    if (!response?.ok) {
+      showMessage(elements.voiceMessage, response?.error || "Could not save interviewer voice.");
+      return;
+    }
+    showMessage(elements.voiceMessage, "Saved. Applies to the next interview.");
   }
 
   function scheduleVolumeUpdate() {
@@ -228,6 +262,7 @@
         language: pageState.language,
         code: pageState.code,
         codeVersion: pageState.codeVersion,
+        voice: elements.voice.value,
       },
     });
     if (!response?.ok) {
@@ -245,13 +280,30 @@
     await refreshStatus();
   }
 
+  async function toggleFocus() {
+    const nextMode = hostStatus.interactionMode === "focus" ? "conversation" : "focus";
+    elements.toggleFocus.disabled = true;
+    const response = await browser.runtime.sendMessage({
+      type: "SET_INTERACTION_MODE",
+      mode: nextMode,
+    });
+    if (!response?.ok) {
+      showMessage(elements.actionMessage, response?.error || "Could not change interaction mode.");
+    }
+    await refreshStatus({ clearActionMessage: false });
+  }
+
   elements.savePort.addEventListener("click", () => savePort());
   elements.volume.addEventListener("focus", () => { volumeEditing = true; });
   elements.volume.addEventListener("blur", () => { volumeEditing = false; });
   elements.volume.addEventListener("input", () => scheduleVolumeUpdate());
+  elements.voice.addEventListener("focus", () => { voiceEditing = true; });
+  elements.voice.addEventListener("blur", () => { voiceEditing = false; });
+  elements.voice.addEventListener("change", () => saveVoice());
   elements.refresh.addEventListener("click", () => refreshStatus());
   elements.start.addEventListener("click", () => startInterview());
   elements.stop.addEventListener("click", () => stopInterview());
+  elements.toggleFocus.addEventListener("click", () => toggleFocus());
 
   setInterval(() => {
     if (hostStatus.running) {

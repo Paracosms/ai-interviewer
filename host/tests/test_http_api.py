@@ -196,6 +196,79 @@ async def test_problem_change_is_visible_in_host_status(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_interaction_mode_endpoint_updates_public_status(tmp_path):
+    async def fake_starter(payload, state):
+        del payload, state
+
+    client = TestClient(TestServer(create_app(make_config(tmp_path), session_starter=fake_starter)))
+    await client.start_server()
+    try:
+        await client.post("/session/start", json=start_payload())
+        changed = await client.post(
+            "/session/mode",
+            json={"protocolVersion": 1, "mode": "focus"},
+        )
+        assert changed.status == 200
+        assert (await changed.json())["interactionMode"] == "focus"
+        status = await client.get("/session/status")
+        assert (await status.json())["interactionMode"] == "focus"
+        invalid = await client.post(
+            "/session/mode",
+            json={"protocolVersion": 1, "mode": "quiet"},
+        )
+        assert invalid.status == 400
+    finally:
+        await client.post("/session/stop")
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_run_result_is_current_and_deduplicated(tmp_path):
+    calls = []
+
+    async def fake_starter(payload, state):
+        del payload, state
+
+    async def handle_result(payload, state, result):
+        calls.append((payload, state, result))
+
+    client = TestClient(TestServer(create_app(
+        make_config(tmp_path),
+        session_starter=fake_starter,
+        run_result_handler=handle_result,
+    )))
+    await client.start_server()
+    payload = {
+        "protocolVersion": 1,
+        "pageUrl": start_payload()["pageUrl"],
+        "codeVersion": 1,
+        "status": "failed",
+        "resultSignature": "run-deadbeef",
+        "caseLabel": "Case 1",
+        "input": "nums=[2,7], target=9",
+        "expected": "[0,1]",
+        "actual": "[]",
+    }
+    try:
+        await client.post("/session/start", json=start_payload())
+        first = await client.post("/session/run-result", json=payload)
+        duplicate = await client.post("/session/run-result", json=payload)
+        stale = await client.post(
+            "/session/run-result",
+            json={**payload, "resultSignature": "run-stale", "codeVersion": 0},
+        )
+        assert (await first.json())["result"] == "accepted"
+        assert (await duplicate.json())["result"] == "ignored_duplicate"
+        assert (await stale.json())["result"] == "ignored_stale"
+        assert [call[2] for call in calls] == ["accepted", "ignored_duplicate", "ignored_stale"]
+        passed = await client.post("/session/run-result", json={**payload, "status": "passed"})
+        assert passed.status == 400
+    finally:
+        await client.post("/session/stop")
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_ordinary_browser_origin_is_rejected(tmp_path):
     client = TestClient(TestServer(create_app(make_config(tmp_path))))
     await client.start_server()

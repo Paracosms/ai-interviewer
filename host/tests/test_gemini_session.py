@@ -1,10 +1,11 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 from google.genai import types
 
 from interviewer.audio_io import AudioIO
-from interviewer.config import load_config
+from interviewer.config import ConfigurationError, load_config
 from interviewer.gemini_session import (
     GeminiLiveSession,
     build_live_config,
@@ -12,6 +13,7 @@ from interviewer.gemini_session import (
     classify_gemini_error,
 )
 from interviewer.logging_utils import SessionJsonLogger
+from interviewer.state import InterviewState
 
 
 class ApiErrorForTest(Exception):
@@ -37,15 +39,45 @@ def make_config(tmp_path: Path):
     )
 
 
+def make_running_state() -> InterviewState:
+    state = InterviewState()
+    state.begin(
+        page_url="https://leetcode.com/problems/two-sum/",
+        problem_slug="two-sum",
+        problem_title="Two Sum",
+        problem_text="Find two numbers.",
+        language="python3",
+        code="pass",
+        code_version=1,
+        now=0,
+    )
+    state.mark_running()
+    return state
+
+
 def test_live_config_enables_required_audio_and_session_features() -> None:
     config = build_live_config(voice="Kore", system_instruction="test")
     dumped = config.model_dump(exclude_none=True, by_alias=True)
     assert dumped["responseModalities"] == [types.Modality.AUDIO]
     assert dumped["inputAudioTranscription"] == {}
     assert dumped["outputAudioTranscription"] == {}
-    assert dumped["realtimeInputConfig"]["automaticActivityDetection"]["silenceDurationMs"] == 700
+    assert dumped["realtimeInputConfig"]["automaticActivityDetection"]["silenceDurationMs"] == 1200
+    assert dumped["thinkingConfig"]["thinkingLevel"] == types.ThinkingLevel.LOW
     assert dumped["sessionResumption"] == {}
     assert dumped["contextWindowCompression"] == {"slidingWindow": {}}
+
+
+def test_thinking_level_is_configurable_and_validated(tmp_path: Path) -> None:
+    configured = load_config(
+        tmp_path / ".env",
+        environ={"GEMINI_API_KEY": "test-key", "GEMINI_THINKING_LEVEL": "medium"},
+    )
+    assert configured.gemini_thinking_level == "medium"
+    with pytest.raises(ConfigurationError, match="GEMINI_THINKING_LEVEL"):
+        load_config(
+            tmp_path / ".env",
+            environ={"GEMINI_API_KEY": "test-key", "GEMINI_THINKING_LEVEL": "extreme"},
+        )
 
 
 def test_runtime_prompt_is_appended_to_editable_prompt(tmp_path: Path) -> None:
@@ -207,6 +239,106 @@ def test_turn_complete_marks_buffer_to_drain_short_audio(tmp_path: Path) -> None
         )
     )
     assert audio.output_buffer.read(8) == b"tail"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_transcript_holds_response_until_question_arrives(tmp_path: Path) -> None:
+    audio = AudioIO(output_buffer_bytes=64)
+    live = GeminiLiveSession(
+        config=make_config(tmp_path),
+        audio=audio,
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=object(),
+        state=make_running_state(),
+    )
+    live._handle_candidate_transcript("I think the loop should um")
+    assert audio.output_held is True
+    live._handle_candidate_transcript("Can I assume the input is nonempty?")
+    await asyncio.sleep(0)
+    assert audio.output_held is False
+
+
+def test_focus_mode_drops_unsolicited_output_but_allows_a_direct_question(tmp_path: Path) -> None:
+    state = make_running_state()
+    state.set_interaction_mode("focus")
+    audio = AudioIO(output_buffer_bytes=64)
+    live = GeminiLiveSession(
+        config=make_config(tmp_path),
+        audio=audio,
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=object(),
+        state=state,
+    )
+    audio_message = types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            model_turn=types.Content(parts=[types.Part(inline_data=types.Blob(data=b"nope", mime_type="audio/pcm;rate=24000"))])
+        )
+    )
+    live._process_message(audio_message)
+    assert len(audio.output_buffer) == 0
+
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="What does this constraint mean?")
+        )
+    ))
+    live._process_message(audio_message)
+    assert len(audio.output_buffer) == 4
+
+
+@pytest.mark.asyncio
+async def test_failed_run_allows_exactly_one_focus_interjection(tmp_path: Path) -> None:
+    state = make_running_state()
+    state.set_interaction_mode("focus")
+    audio = AudioIO(output_buffer_bytes=64)
+    live = GeminiLiveSession(
+        config=make_config(tmp_path),
+        audio=audio,
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=object(),
+        state=state,
+    )
+
+    class RealtimeSession:
+        def __init__(self):
+            self.texts = []
+
+        async def send_realtime_input(self, **kwargs):
+            self.texts.append(kwargs.get("text"))
+
+    sdk_session = RealtimeSession()
+    live._session = sdk_session
+    accepted = await live.notify_failed_run({
+        "resultSignature": "run-1",
+        "caseLabel": "Case 1",
+        "input": "[2,7]",
+        "expected": "[0,1]",
+        "actual": "[]",
+    })
+    assert accepted is True
+    assert "neutral question" in sdk_session.texts[0]
+    live._process_message(
+        types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True)),
+        tool_call_pending=True,
+    )
+    assert live._failure_interjection_active is True
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            model_turn=types.Content(parts=[types.Part(inline_data=types.Blob(data=b"ask", mime_type="audio/pcm;rate=24000"))]),
+            turn_complete=True,
+        )
+    ))
+    assert audio.output_buffer.read(8) == b"ask"
+
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            model_turn=types.Content(parts=[types.Part(inline_data=types.Blob(data=b"extra", mime_type="audio/pcm;rate=24000"))])
+        )
+    ))
+    assert len(audio.output_buffer) == 0
 
 
 def test_receiver_stays_connected_across_model_turns(tmp_path: Path) -> None:

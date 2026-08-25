@@ -99,7 +99,7 @@
     if (
       message.source !== MESSAGE_SOURCE ||
       message.protocolVersion !== PROTOCOL_VERSION ||
-      !["CODE_SNAPSHOT", "DETECTION_ERROR"].includes(message.type) ||
+      !["CODE_SNAPSHOT", "DETECTION_ERROR", "RUN_RESULT"].includes(message.type) ||
       !message.payload ||
       typeof message.payload !== "object"
     ) {
@@ -166,28 +166,31 @@
     }
   }
 
+  function sendCurrentCodeUpdate() {
+    if (!latestCode || (latestCode === lastSentCode && latestLanguage === lastSentLanguage)) {
+      return Promise.resolve({ ok: true });
+    }
+    lastSentCode = latestCode;
+    lastSentLanguage = latestLanguage;
+    return browser.runtime.sendMessage({
+      type: "CODE_UPDATE",
+      payload: {
+        protocolVersion: PROTOCOL_VERSION,
+        pageUrl,
+        language: latestLanguage,
+        code: latestCode,
+        codeVersion: latestCodeVersion,
+      },
+    });
+  }
+
   function scheduleCodeUpdate() {
     if (codeDebounceTimer !== null) {
       clearTimeout(codeDebounceTimer);
     }
     codeDebounceTimer = setTimeout(() => {
       codeDebounceTimer = null;
-      if (!latestCode || (latestCode === lastSentCode && latestLanguage === lastSentLanguage)) {
-        setPageState();
-        return;
-      }
-      lastSentCode = latestCode;
-      lastSentLanguage = latestLanguage;
-      browser.runtime.sendMessage({
-        type: "CODE_UPDATE",
-        payload: {
-          protocolVersion: PROTOCOL_VERSION,
-          pageUrl,
-          language: latestLanguage,
-          code: latestCode,
-          codeVersion: latestCodeVersion,
-        },
-      }).catch(() => {
+      sendCurrentCodeUpdate().catch(() => {
         // Host-offline and stopped-session errors are shown by the popup health/status view.
       });
       setPageState();
@@ -204,6 +207,40 @@
         return;
       }
       setPageState(String(message.payload.message || EDITOR_NOT_DETECTED_MESSAGE));
+      return;
+    }
+    if (message.type === "RUN_RESULT") {
+      const result = message.payload;
+      const boundedFields = ["caseLabel", "input", "expected", "actual"];
+      if (
+        result.status !== "failed"
+        || typeof result.resultSignature !== "string"
+        || !result.resultSignature
+        || result.resultSignature.length > 256
+        || boundedFields.some((key) => typeof result[key] !== "string" || result[key].length > 10000)
+        || !latestCode
+      ) {
+        return;
+      }
+      sendCurrentCodeUpdate()
+        .catch(() => null)
+        .then(() => browser.runtime.sendMessage({
+          type: "RUN_RESULT",
+          payload: {
+            protocolVersion: PROTOCOL_VERSION,
+            pageUrl,
+            codeVersion: latestCodeVersion,
+            status: "failed",
+            resultSignature: result.resultSignature,
+            caseLabel: result.caseLabel,
+            input: result.input,
+            expected: result.expected,
+            actual: result.actual,
+          },
+        }))
+        .catch(() => {
+          // The host may be offline or no interview may be active.
+        });
       return;
     }
     const payload = message.payload;

@@ -74,6 +74,32 @@ test("rejects invalid ports without making a request", async () => {
   assert.equal(background.requests.length, 0);
 });
 
+test("persists a supported Gemini voice selection", async () => {
+  const background = loadBackground();
+  assert.equal((await background.listener({ type: "GET_GEMINI_VOICE" }, {})).voice, "Kore");
+  const response = await background.listener(
+    { type: "SAVE_GEMINI_VOICE", voice: "Aoede" },
+    {},
+  );
+  assert.equal(response.ok, true);
+  assert.equal(response.voice, "Aoede");
+  assert.equal(background.storage.geminiVoice, "Aoede");
+  assert.equal(
+    (await background.listener({ type: "GET_GEMINI_VOICE" }, {})).voice,
+    "Aoede",
+  );
+});
+
+test("rejects an unsupported Gemini voice", async () => {
+  const background = loadBackground();
+  const response = await background.listener(
+    { type: "SAVE_GEMINI_VOICE", voice: "NotARealVoice" },
+    {},
+  );
+  assert.equal(response.ok, false);
+  assert.equal(background.storage.geminiVoice, undefined);
+});
+
 test("all host requests use the currently stored port", async () => {
   const background = loadBackground();
   await background.listener({ type: "SAVE_HOST_PORT", port: 8766 }, {});

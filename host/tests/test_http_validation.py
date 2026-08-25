@@ -48,6 +48,23 @@ def test_non_leetcode_page_url_is_rejected() -> None:
         )
 
 
+def test_unsupported_gemini_voice_is_rejected() -> None:
+    with pytest.raises(Exception, match="supported Gemini voices"):
+        validate_start_payload(
+            {
+                "protocolVersion": 1,
+                "pageUrl": "https://leetcode.com/problems/two-sum/",
+                "problemSlug": "two-sum",
+                "problemTitle": "Two Sum",
+                "problemText": "x" * 200,
+                "language": "python3",
+                "code": "pass",
+                "codeVersion": 1,
+                "voice": "NotARealVoice",
+            }
+        )
+
+
 def test_invalid_local_port_is_rejected() -> None:
     with pytest.raises(ConfigurationError, match="LOCAL_PORT"):
         parse_local_port("65536")

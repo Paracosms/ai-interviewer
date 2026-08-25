@@ -18,7 +18,42 @@ DEFAULT_LOCAL_HOST = "127.0.0.1"
 DEFAULT_LOCAL_PORT = 8765
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview"
 DEFAULT_GEMINI_VOICE = "Kore"
+SUPPORTED_GEMINI_VOICES = frozenset(
+    {
+        "Zephyr",
+        "Puck",
+        "Charon",
+        "Kore",
+        "Fenrir",
+        "Leda",
+        "Orus",
+        "Aoede",
+        "Callirrhoe",
+        "Autonoe",
+        "Enceladus",
+        "Iapetus",
+        "Umbriel",
+        "Algieba",
+        "Despina",
+        "Erinome",
+        "Algenib",
+        "Rasalgethi",
+        "Laomedeia",
+        "Achernar",
+        "Alnilam",
+        "Schedar",
+        "Gacrux",
+        "Pulcherrima",
+        "Achird",
+        "Zubenelgenubi",
+        "Vindemiatrix",
+        "Sadachbia",
+        "Sadaltager",
+        "Sulafat",
+    }
+)
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
 
 
 class ConfigurationError(ValueError):
@@ -32,6 +67,7 @@ class HostConfig:
     gemini_api_key: str
     gemini_model: str
     gemini_voice: str
+    gemini_thinking_level: str
     local_host: str
     local_port: int
     audio_input_device: str | None
@@ -150,6 +186,13 @@ def load_config(
         allowed = ", ".join(sorted(VALID_LOG_LEVELS))
         raise ConfigurationError(f"LOG_LEVEL must be one of: {allowed}.")
 
+    thinking_level = (
+        str(values.get("GEMINI_THINKING_LEVEL", "low") or "low").strip().lower()
+    )
+    if thinking_level not in VALID_THINKING_LEVELS:
+        allowed = ", ".join(sorted(VALID_THINKING_LEVELS))
+        raise ConfigurationError(f"GEMINI_THINKING_LEVEL must be one of: {allowed}.")
+
     return HostConfig(
         gemini_api_key=api_key,
         gemini_model=(
@@ -160,6 +203,7 @@ def load_config(
             str(values.get("GEMINI_VOICE", DEFAULT_GEMINI_VOICE) or "").strip()
             or DEFAULT_GEMINI_VOICE
         ),
+        gemini_thinking_level=thinking_level,
         local_host=local_host,
         local_port=local_port,
         audio_input_device=_optional_text(values, "AUDIO_INPUT_DEVICE"),
