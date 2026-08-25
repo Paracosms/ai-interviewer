@@ -54,6 +54,25 @@ async def test_health_and_status_endpoints(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_audio_volume_endpoint_round_trips_volume(tmp_path):
+    client = TestClient(TestServer(create_app(make_config(tmp_path))))
+    await client.start_server()
+    try:
+        initial = await client.get("/audio/volume")
+        assert initial.status == 200
+        assert (await initial.json())["volume"] == 1.0
+
+        updated = await client.post("/audio/volume", json={"volume": 0.35})
+        assert updated.status == 200
+        assert (await updated.json())["volume"] == 0.35
+
+        invalid = await client.post("/audio/volume", json={"volume": 1.1})
+        assert invalid.status == 400
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_malformed_json_is_rejected(tmp_path):
     client = TestClient(TestServer(create_app(make_config(tmp_path))))
     await client.start_server()

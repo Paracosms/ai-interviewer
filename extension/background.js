@@ -154,6 +154,12 @@
     if (type === "GET_HOST_STATUS") {
       return requestHost("/session/status");
     }
+    if (type === "GET_AUDIO_VOLUME") {
+      return requestHost("/audio/volume");
+    }
+    if (type === "SET_AUDIO_VOLUME") {
+      return requestHost("/audio/volume", { method: "POST", body: { volume: message.volume } });
+    }
     if (type === "START_INTERVIEW") {
       return requestHost("/session/start", { method: "POST", body: message.payload });
     }

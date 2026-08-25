@@ -20,6 +20,16 @@
       <p id="port-message" class="message" role="status"></p>
     </section>
 
+    <section class="settings audio-settings" aria-labelledby="audio-heading">
+      <h2 id="audio-heading">Audio</h2>
+      <div class="volume-row">
+        <label for="volume">Speaker volume</label>
+        <output id="volume-value" for="volume">100%</output>
+      </div>
+      <input id="volume" type="range" min="0" max="100" step="1" value="100">
+      <p id="volume-message" class="message" role="status"></p>
+    </section>
+
     <dl class="status-list">
       <div><dt>Local host</dt><dd id="host-status">Checking…</dd></div>
       <div><dt>LeetCode problem</dt><dd id="problem-status">Checking…</dd></div>
@@ -42,4 +52,3 @@
   <script src="popup.js"></script>
 </body>
 </html>
-

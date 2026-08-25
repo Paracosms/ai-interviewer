@@ -8,6 +8,9 @@
     port: $("host-port"),
     savePort: $("save-port"),
     portMessage: $("port-message"),
+    volume: $("volume"),
+    volumeValue: $("volume-value"),
+    volumeMessage: $("volume-message"),
     hostStatus: $("host-status"),
     problemStatus: $("problem-status"),
     problemTitle: $("problem-title"),
@@ -30,6 +33,8 @@
   let elapsedBaseSeconds = null;
   let elapsedSyncedAt = null;
   let statusRefreshPromise = null;
+  let volumeEditing = false;
+  let volumeRequestTimer = null;
 
   function showMessage(element, text = "") {
     element.textContent = text;
@@ -96,10 +101,19 @@
         ? "Verified hints unavailable"
         : (hostStatus.hintsEligible ? "Eligible" : "Locked"));
     elements.lastError.textContent = hostStatus.lastError || hostStatus.problemAnalysisError || "—";
+    elements.volumeValue.textContent = `${elements.volume.value}%`;
 
     const canStart = hostHealth.ok && hostStatus.ok && problemDetected() && !hostStatus.running && ["stopped", "error"].includes(hostStatus.status);
     elements.start.disabled = !canStart;
     elements.stop.disabled = !hostStatus.running && hostStatus.status !== "starting" && hostStatus.status !== "reconnecting";
+  }
+
+  function applyVolumeResponse(response) {
+    if (!response?.ok || !Number.isFinite(response.volume)) {
+      return;
+    }
+    elements.volume.value = String(Math.round(Math.max(0, Math.min(1, response.volume)) * 100));
+    elements.volumeValue.textContent = `${elements.volume.value}%`;
   }
 
   async function findActiveTab() {
@@ -142,6 +156,7 @@
         browser.runtime.sendMessage({ type: "GET_HOST_PORT" }),
         browser.runtime.sendMessage({ type: "HOST_HEALTH" }),
         browser.runtime.sendMessage({ type: "GET_HOST_STATUS" }),
+        browser.runtime.sendMessage({ type: "GET_AUDIO_VOLUME" }),
         refreshPageState(),
       ]);
       const portResult = results[0];
@@ -150,6 +165,9 @@
       }
       hostHealth = results[1] || { ok: false, error: "Host health check failed." };
       updateHostStatus(results[2] || { ok: false, status: "stopped", lastError: hostHealth.error });
+      if (!volumeEditing && volumeRequestTimer === null) {
+        applyVolumeResponse(results[3]);
+      }
       render();
     })();
     try {
@@ -157,6 +175,24 @@
     } finally {
       statusRefreshPromise = null;
     }
+  }
+
+  function scheduleVolumeUpdate() {
+    elements.volumeValue.textContent = `${elements.volume.value}%`;
+    showMessage(elements.volumeMessage, "");
+    if (volumeRequestTimer !== null) {
+      clearTimeout(volumeRequestTimer);
+    }
+    volumeRequestTimer = setTimeout(async () => {
+      volumeRequestTimer = null;
+      const response = await browser.runtime.sendMessage({
+        type: "SET_AUDIO_VOLUME",
+        volume: Number(elements.volume.value) / 100,
+      });
+      if (!response?.ok) {
+        showMessage(elements.volumeMessage, response?.error || "Could not set speaker volume.");
+      }
+    }, 100);
   }
 
   async function savePort() {
@@ -210,6 +246,9 @@
   }
 
   elements.savePort.addEventListener("click", () => savePort());
+  elements.volume.addEventListener("focus", () => { volumeEditing = true; });
+  elements.volume.addEventListener("blur", () => { volumeEditing = false; });
+  elements.volume.addEventListener("input", () => scheduleVolumeUpdate());
   elements.refresh.addEventListener("click", () => refreshStatus());
   elements.start.addEventListener("click", () => startInterview());
   elements.stop.addEventListener("click", () => stopInterview());

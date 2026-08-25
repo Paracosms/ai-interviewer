@@ -1,4 +1,5 @@
 import asyncio
+import struct
 
 import pytest
 import sounddevice
@@ -86,6 +87,21 @@ def test_output_callback_consumes_model_pcm() -> None:
     output = bytearray(b"x" * 8)
     audio._output_callback(output, 4, None, None)
     assert output == b"1234\x00\x00\x00\x00"
+
+
+def test_output_callback_applies_speaker_volume_without_changing_pcm_shape() -> None:
+    audio = AudioIO(output_buffer_bytes=32, volume=0.5)
+    audio.write_model_audio(struct.pack("<hh", 1000, -1000))
+    audio.finish_model_turn()
+    output = bytearray(b"x" * 4)
+    audio._output_callback(output, 2, None, None)
+    assert struct.unpack("<hh", output) == (500, -500)
+
+
+def test_speaker_volume_can_be_changed_while_audio_is_running() -> None:
+    audio = AudioIO(volume=1.0)
+    audio.set_volume(0.25)
+    assert audio.volume == 0.25
 
 
 def test_microphone_failure_is_actionable_and_does_not_leave_audio_running(monkeypatch) -> None:

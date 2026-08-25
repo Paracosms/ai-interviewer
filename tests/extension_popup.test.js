@@ -21,6 +21,9 @@ async function loadPopup() {
     "host-port",
     "save-port",
     "port-message",
+    "volume",
+    "volume-value",
+    "volume-message",
     "host-status",
     "problem-status",
     "problem-title",
@@ -77,6 +80,12 @@ async function loadPopup() {
             problemAnalysisStatus: "pending",
             problemAnalysisError: null,
           };
+        }
+        if (message.type === "GET_AUDIO_VOLUME") {
+          return { ok: true, volume: 1 };
+        }
+        if (message.type === "SET_AUDIO_VOLUME") {
+          return { ok: true, volume: message.volume };
         }
         throw new Error(`Unexpected message: ${message.type}`);
       },

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -45,6 +46,9 @@ class HostRuntime:
     session_starter: Callable[[dict[str, Any], InterviewState], Awaitable[None]] | None = None
     session_stopper: Callable[[], Awaitable[None]] | None = None
     code_update_logger: Callable[[str, InterviewState], None] | None = None
+    volume_getter: Callable[[], float] | None = None
+    volume_setter: Callable[[float], None] | None = None
+    volume: float = 1.0
     lock: asyncio.Lock | None = None
 
     def __post_init__(self) -> None:
@@ -136,6 +140,15 @@ def _required_code_version(payload: Mapping[str, Any]) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ApiError("codeVersion must be a nonnegative integer.")
     return value
+
+
+def validate_volume_payload(payload: Mapping[str, Any]) -> float:
+    value = payload.get("volume")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ApiError("volume must be a finite number between 0 and 1.")
+    if not 0 <= value <= 1:
+        raise ApiError("volume must be between 0 and 1.")
+    return float(value)
 
 
 def validate_start_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -308,6 +321,34 @@ async def session_stop(request: web.Request) -> web.Response:
     return _json_response({"ok": True, "status": "stopped"}, origin=request.headers.get("Origin"))
 
 
+async def audio_volume(request: web.Request) -> web.Response:
+    runtime = _runtime(request)
+    if request.method == "POST":
+        try:
+            volume = validate_volume_payload(await _read_json(request))
+        except ApiError as exc:
+            return _json_response(
+                {"ok": False, "error": exc.message},
+                status=exc.status,
+                origin=request.headers.get("Origin"),
+            )
+        try:
+            if runtime.volume_setter is not None:
+                runtime.volume_setter(volume)
+            runtime.volume = volume
+        except ValueError as exc:
+            return _json_response(
+                {"ok": False, "error": str(exc)},
+                status=400,
+                origin=request.headers.get("Origin"),
+            )
+    volume = runtime.volume_getter() if runtime.volume_getter is not None else runtime.volume
+    return _json_response(
+        {"ok": True, "volume": volume},
+        origin=request.headers.get("Origin"),
+    )
+
+
 async def _options(request: web.Request) -> web.Response:
     """Fallback OPTIONS route; the middleware supplies the CORS headers."""
 
@@ -322,6 +363,8 @@ def create_app(
     session_starter: Callable[[dict[str, Any], InterviewState], Awaitable[None]] | None = None,
     session_stopper: Callable[[], Awaitable[None]] | None = None,
     code_update_logger: Callable[[str, InterviewState], None] | None = None,
+    volume_getter: Callable[[], float] | None = None,
+    volume_setter: Callable[[float], None] | None = None,
 ) -> web.Application:
     """Create the aiohttp application without binding a socket."""
 
@@ -332,6 +375,8 @@ def create_app(
         session_starter=session_starter,
         session_stopper=session_stopper,
         code_update_logger=code_update_logger,
+        volume_getter=volume_getter,
+        volume_setter=volume_setter,
     )
     app = web.Application(middlewares=[_security_middleware], client_max_size=200_000)
     app[RUNTIME_KEY] = runtime
@@ -340,5 +385,7 @@ def create_app(
     app.router.add_post("/session/start", session_start)
     app.router.add_post("/session/code", session_code)
     app.router.add_post("/session/stop", session_stop)
+    app.router.add_get("/audio/volume", audio_volume)
+    app.router.add_post("/audio/volume", audio_volume)
     app.router.add_route("OPTIONS", "/{path:.*}", _options)
     return app

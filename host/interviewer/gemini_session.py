@@ -585,6 +585,7 @@ class HostSessionManager:
         self._stop_requested = False
         self.hint_gate = HintGate()
         self._logger: SessionJsonLogger | None = None
+        self._volume = 1.0
         self.problem_analyzer = problem_analyzer or GeminiProblemAnalyzer(
             api_key=config.gemini_api_key
         )
@@ -609,6 +610,7 @@ class HostSessionManager:
         audio = AudioIO(
             input_device=self.config.audio_input_device,
             output_device=self.config.audio_output_device,
+            volume=self._volume,
         )
         tool_service = InterviewToolService(
             state=state,
@@ -642,6 +644,20 @@ class HostSessionManager:
         except Exception:
             await self.stop()
             raise
+
+    def get_volume(self) -> float:
+        """Return the current speaker volume as a value between 0 and 1."""
+
+        if self._live is not None:
+            return self._live.audio.volume
+        return self._volume
+
+    def set_volume(self, value: float) -> None:
+        """Set speaker playback volume, including during an active interview."""
+
+        if self._live is not None:
+            self._live.audio.set_volume(value)
+        self._volume = float(value)
 
     async def _prepare_problem_analysis(
         self,

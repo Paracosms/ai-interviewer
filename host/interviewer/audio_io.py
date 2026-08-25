@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import struct
 import threading
 from collections import deque
 from typing import Any
@@ -23,6 +25,29 @@ OUTPUT_PREBUFFER_BYTES = OUTPUT_SAMPLE_RATE * 2 * OUTPUT_PREBUFFER_MS // 1_000
 
 class AudioError(RuntimeError):
     """Raised when a configured Windows audio device cannot be opened."""
+
+
+def _validate_volume(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError("Volume must be a finite number between 0 and 1.")
+    if not 0 <= value <= 1:
+        raise ValueError("Volume must be between 0 and 1.")
+    return float(value)
+
+
+def _scale_pcm16(data: bytes, volume: float) -> bytes:
+    """Apply a linear gain to little-endian signed 16-bit mono PCM."""
+
+    if volume >= 1:
+        return data
+    if volume <= 0:
+        return b"\x00" * len(data)
+    sample_bytes = len(data) - (len(data) % 2)
+    if not sample_bytes:
+        return data
+    samples = struct.unpack(f"<{sample_bytes // 2}h", data[:sample_bytes])
+    scaled = b"".join(struct.pack("<h", int(sample * volume)) for sample in samples)
+    return scaled + data[sample_bytes:]
 
 
 def _device_value(value: str | None) -> str | int | None:
@@ -148,6 +173,7 @@ class AudioIO:
         output_device: str | None = None,
         input_queue_size: int = 80,
         output_buffer_bytes: int | None = None,
+        volume: float = 1.0,
     ) -> None:
         self.input_device = _device_value(input_device)
         self.output_device = _device_value(output_device)
@@ -156,6 +182,8 @@ class AudioIO:
             max_bytes=output_buffer_bytes,
             prebuffer_bytes=OUTPUT_PREBUFFER_BYTES,
         )
+        self._volume = _validate_volume(volume)
+        self._volume_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._input_stream: Any = None
         self._output_stream: Any = None
@@ -164,6 +192,15 @@ class AudioIO:
     @property
     def running(self) -> bool:
         return self._input_stream is not None or self._output_stream is not None
+
+    @property
+    def volume(self) -> float:
+        with self._volume_lock:
+            return self._volume
+
+    def set_volume(self, value: float) -> None:
+        with self._volume_lock:
+            self._volume = _validate_volume(value)
 
     def start(self) -> None:
         """Open both streams, failing before a Gemini session is connected."""
@@ -245,6 +282,7 @@ class AudioIO:
         outdata[:] = b"\x00" * output_size
         data = self.output_buffer.read(output_size)
         if data:
+            data = _scale_pcm16(data, self.volume)
             outdata[: len(data)] = data
 
     def stop(self) -> None:

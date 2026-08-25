@@ -109,7 +109,7 @@ Build from the repository root:
 ```
 
 The script generates readable source artifacts under
-`extension/dist/leetcode_ai_interviewer-0.1.6.zip`, runs `web-ext lint`, and
+`extension/dist/leetcode_ai_interviewer-0.1.7.zip`, runs `web-ext lint`, and
 keeps the stable Gecko ID:
 
 ```text
@@ -149,10 +149,12 @@ extension.
 8. Click **Start Interview**. The voice interview starts immediately while the
    host verifies the intended solution and prepares private hints in the
    background.
-9. Speak naturally and interrupt the interviewer when needed.
-10. Edit code normally in LeetCode; debounced full-buffer updates go to the
+9. Adjust **Speaker volume** in the extension popup at any time, including while
+   the interviewer is speaking.
+10. Speak naturally and interrupt the interviewer when needed.
+11. Edit code normally in LeetCode; debounced full-buffer updates go to the
     localhost host.
-11. Click **Stop Interview** when finished.
+12. Click **Stop Interview** when finished.
 
 The host sends the problem to Gemini 3.7 Flash with Google Search enabled while
 the Live interviewer begins its greeting and neutral opening questions. The

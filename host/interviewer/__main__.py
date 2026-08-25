@@ -68,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
                 session_starter=manager.start,
                 session_stopper=manager.stop,
                 code_update_logger=manager.log_code_update,
+                volume_getter=manager.get_volume,
+                volume_setter=manager.set_volume,
             )
             asyncio.run(_serve_config(config, app, manager))
     except ConfigurationError as exc:

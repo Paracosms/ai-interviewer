@@ -39,6 +39,24 @@ h2 {
   gap: 8px;
 }
 
+.volume-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.volume-row output {
+  color: #f9fafb;
+  font-size: 12px;
+}
+
+#volume {
+  width: 100%;
+  margin: 8px 0 0;
+  accent-color: #f59e0b;
+}
+
 label,
 dt {
   color: #9ca3af;
@@ -117,4 +135,3 @@ dd {
   color: #fbbf24;
   font-size: 11px;
 }
-
