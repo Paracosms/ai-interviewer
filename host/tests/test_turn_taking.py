@@ -1,4 +1,4 @@
-from interviewer.turn_taking import is_focus_exit_handoff, permits_quick_response
+from interviewer.turn_taking import permits_quick_response
 
 
 def test_direct_questions_and_explicit_handoffs_release_quickly() -> None:
@@ -12,8 +12,3 @@ def test_ambiguous_or_incomplete_statements_are_held() -> None:
     assert permits_quick_response("I think the next step is um") is False
     assert permits_quick_response("This loop handles the duplicate case.") is False
     assert permits_quick_response("") is False
-
-
-def test_only_explicit_completion_exits_focus() -> None:
-    assert is_focus_exit_handoff("I'm done now") is True
-    assert is_focus_exit_handoff("What do you think?") is False

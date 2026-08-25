@@ -66,25 +66,17 @@ def _device_value(value: str | None) -> str | int | None:
 class PcmPlaybackBuffer:
     """Lossless PCM jitter buffer consumed by PortAudio's callback.
 
-    Live audio can arrive faster than the sound device consumes it. Production
-    playback therefore has no size cap: discarding old PCM corrupts speech and
-    commonly cuts through a word. A limit remains available to callers that
-    explicitly need a bounded buffer.
+    Live audio can arrive faster than the sound device consumes it. Playback
+    therefore has no size cap: discarding old PCM corrupts speech and commonly
+    cuts through a word.
     """
 
     def __init__(
         self,
         *,
-        max_bytes: int | None = None,
         prebuffer_bytes: int = 0,
     ) -> None:
-        self.max_bytes = None if max_bytes is None else max(1, int(max_bytes))
-        requested_prebuffer = max(0, int(prebuffer_bytes))
-        self.prebuffer_bytes = (
-            requested_prebuffer
-            if self.max_bytes is None
-            else min(self.max_bytes, requested_prebuffer)
-        )
+        self.prebuffer_bytes = max(0, int(prebuffer_bytes))
         self._chunks: deque[bytes] = deque()
         self._size = 0
         self._playing = self.prebuffer_bytes == 0
@@ -96,15 +88,9 @@ class PcmPlaybackBuffer:
         if not data:
             return
         chunk = bytes(data)
-        if self.max_bytes is not None and len(chunk) > self.max_bytes:
-            chunk = chunk[-self.max_bytes :]
         with self._lock:
-            if self.max_bytes is not None:
-                while self._chunks and self._size + len(chunk) > self.max_bytes:
-                    self._size -= len(self._chunks.popleft())
-            if self.max_bytes is None or self._size + len(chunk) <= self.max_bytes:
-                self._chunks.append(chunk)
-                self._size += len(chunk)
+            self._chunks.append(chunk)
+            self._size += len(chunk)
 
     def read(self, size: int) -> bytes:
         requested = max(0, int(size))
@@ -191,7 +177,6 @@ class AudioIO:
         input_device: str | None = None,
         output_device: str | None = None,
         input_queue_size: int = 80,
-        output_buffer_bytes: int | None = None,
         volume: float = 1.0,
         clock=time.monotonic,
         microphone_tail_seconds: float = PLAYBACK_MICROPHONE_TAIL_SECONDS,
@@ -200,7 +185,6 @@ class AudioIO:
         self.output_device = _device_value(output_device)
         self.input_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=input_queue_size)
         self.output_buffer = PcmPlaybackBuffer(
-            max_bytes=output_buffer_bytes,
             prebuffer_bytes=OUTPUT_PREBUFFER_BYTES,
         )
         self._volume = _validate_volume(volume)

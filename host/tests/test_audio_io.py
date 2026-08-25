@@ -7,15 +7,6 @@ import sounddevice
 from interviewer.audio_io import AudioError, AudioIO, PcmPlaybackBuffer
 
 
-def test_playback_buffer_is_bounded_and_reads_fifo() -> None:
-    buffer = PcmPlaybackBuffer(max_bytes=4)
-    buffer.append(b"1234")
-    buffer.append(b"56")
-    assert len(buffer) == 2
-    assert buffer.read(4) == b"56"
-    assert buffer.read(4) == b""
-
-
 def test_default_playback_buffer_never_discards_queued_audio() -> None:
     buffer = PcmPlaybackBuffer()
     first = b"a" * (4 * 24_000 * 2)
@@ -27,14 +18,14 @@ def test_default_playback_buffer_never_discards_queued_audio() -> None:
 
 
 def test_playback_buffer_clear_discards_queued_audio() -> None:
-    buffer = PcmPlaybackBuffer(max_bytes=16)
+    buffer = PcmPlaybackBuffer()
     buffer.append(b"audio")
     buffer.clear()
     assert buffer.read(16) == b""
 
 
 def test_playback_buffer_prebuffers_to_hide_network_jitter() -> None:
-    buffer = PcmPlaybackBuffer(max_bytes=32, prebuffer_bytes=8)
+    buffer = PcmPlaybackBuffer(prebuffer_bytes=8)
     buffer.append(b"1234")
     assert buffer.read(4) == b""
     buffer.append(b"5678")
@@ -43,7 +34,7 @@ def test_playback_buffer_prebuffers_to_hide_network_jitter() -> None:
 
 
 def test_playback_buffer_rebuffers_instead_of_playing_a_short_fragment() -> None:
-    buffer = PcmPlaybackBuffer(max_bytes=32, prebuffer_bytes=8)
+    buffer = PcmPlaybackBuffer(prebuffer_bytes=8)
     buffer.append(b"12345678")
     assert buffer.read(4) == b"1234"
     assert buffer.read(8) == b""
@@ -52,21 +43,21 @@ def test_playback_buffer_rebuffers_instead_of_playing_a_short_fragment() -> None
 
 
 def test_playback_buffer_drains_short_tail_when_turn_finishes() -> None:
-    buffer = PcmPlaybackBuffer(max_bytes=32, prebuffer_bytes=8)
+    buffer = PcmPlaybackBuffer(prebuffer_bytes=8)
     buffer.append(b"1234")
     buffer.finish_turn()
     assert buffer.read(8) == b"1234"
 
 
 def test_empty_turn_does_not_disable_prebuffering_for_next_turn() -> None:
-    buffer = PcmPlaybackBuffer(max_bytes=32, prebuffer_bytes=8)
+    buffer = PcmPlaybackBuffer(prebuffer_bytes=8)
     buffer.finish_turn()
     buffer.append(b"1234")
     assert buffer.read(4) == b""
 
 
 def test_playback_buffer_can_hold_and_release_a_complete_turn() -> None:
-    buffer = PcmPlaybackBuffer(max_bytes=32, prebuffer_bytes=0)
+    buffer = PcmPlaybackBuffer(prebuffer_bytes=0)
     buffer.hold()
     buffer.append(b"response")
     buffer.finish_turn()
@@ -84,14 +75,14 @@ def test_input_queue_drops_oldest_block_when_full() -> None:
 
 
 def test_output_callback_fills_underflow_with_silence() -> None:
-    audio = AudioIO(output_buffer_bytes=32)
+    audio = AudioIO()
     output = bytearray(b"x" * 8)
     audio._output_callback(output, 4, None, None)
     assert output == b"\x00" * 8
 
 
 def test_output_callback_consumes_model_pcm() -> None:
-    audio = AudioIO(output_buffer_bytes=32)
+    audio = AudioIO()
     audio.write_model_audio(b"1234")
     audio.finish_model_turn()
     output = bytearray(b"x" * 8)
@@ -102,7 +93,6 @@ def test_output_callback_consumes_model_pcm() -> None:
 def test_model_playback_suppresses_microphone_for_acoustic_tail() -> None:
     now = [10.0]
     audio = AudioIO(
-        output_buffer_bytes=32,
         clock=lambda: now[0],
         microphone_tail_seconds=0.3,
     )
@@ -116,7 +106,7 @@ def test_model_playback_suppresses_microphone_for_acoustic_tail() -> None:
 
 
 def test_output_callback_applies_speaker_volume_without_changing_pcm_shape() -> None:
-    audio = AudioIO(output_buffer_bytes=32, volume=0.5)
+    audio = AudioIO(volume=0.5)
     audio.write_model_audio(struct.pack("<hh", 1000, -1000))
     audio.finish_model_turn()
     output = bytearray(b"x" * 4)

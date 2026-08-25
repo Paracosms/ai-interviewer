@@ -19,20 +19,21 @@ def test_unknown_protocol_version_is_rejected() -> None:
         )
 
 
-def test_oversized_code_is_rejected() -> None:
+def test_code_may_be_empty_but_not_oversized() -> None:
+    payload = {
+        "protocolVersion": 1,
+        "pageUrl": "https://leetcode.com/problems/two-sum/",
+        "problemSlug": "two-sum",
+        "problemTitle": "Two Sum",
+        "problemText": "x" * 200,
+        "language": "python3",
+        "code": "",
+        "codeVersion": 1,
+    }
+    assert validate_start_payload(payload)["code"] == ""
+    payload["code"] = "x" * 50_001
     with pytest.raises(Exception, match="code exceeds"):
-        validate_start_payload(
-            {
-                "protocolVersion": 1,
-                "pageUrl": "https://leetcode.com/problems/two-sum/",
-                "problemSlug": "two-sum",
-                "problemTitle": "Two Sum",
-                "problemText": "x" * 200,
-                "language": "python3",
-                "code": "x" * 50_001,
-                "codeVersion": 1,
-            }
-        )
+        validate_start_payload(payload)
 
 
 def test_non_leetcode_page_url_is_rejected() -> None:
@@ -77,8 +78,15 @@ def test_invalid_log_level_is_rejected(tmp_path: Path) -> None:
         load_config(env_file, environ={"GEMINI_API_KEY": "test-key"})
 
 
+def test_unsupported_configured_gemini_voice_is_rejected(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("GEMINI_VOICE=NotARealVoice\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="GEMINI_VOICE must be one of"):
+        load_config(env_file, environ={"GEMINI_API_KEY": "test-key"})
+
+
 def test_missing_api_key_has_actionable_message(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("LOCAL_PORT=8765\n", encoding="utf-8")
     with pytest.raises(ConfigurationError, match="GEMINI_API_KEY is missing from host/.env"):
-        load_config(env_file, environ={}, require_api_key=True)
+        load_config(env_file, environ={})

@@ -15,9 +15,7 @@ def make_state(now=0):
     state = InterviewState()
     state.begin(
         page_url="https://leetcode.com/problems/two-sum/",
-        problem_slug="two-sum",
         problem_title="Two Sum",
-        problem_text="Find two numbers that add to a target.",
         language="python3",
         code="pass",
         code_version=1,

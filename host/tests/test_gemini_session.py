@@ -43,9 +43,7 @@ def make_running_state() -> InterviewState:
     state = InterviewState()
     state.begin(
         page_url="https://leetcode.com/problems/two-sum/",
-        problem_slug="two-sum",
         problem_title="Two Sum",
-        problem_text="Find two numbers.",
         language="python3",
         code="pass",
         code_version=1,
@@ -123,7 +121,7 @@ def test_resumption_handle_is_kept_in_memory_and_not_logged(tmp_path: Path) -> N
             )
         )
     )
-    assert session.resumption_handle == "sensitive-handle"
+    assert session._resumption_handle == "sensitive-handle"
     contents = logger.path.read_text(encoding="utf-8")
     assert "sensitive-handle" not in contents
 
@@ -159,9 +157,10 @@ def test_usage_metadata_log_includes_configured_model(tmp_path: Path) -> None:
     assert '"model":"gemini-3.1-flash-live-preview"' in contents
 
 
-def test_interruption_clears_playback_and_logs_transcriptions(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_interruption_clears_playback_and_logs_transcriptions(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    audio = AudioIO(output_buffer_bytes=64)
+    audio = AudioIO()
     logger = SessionJsonLogger(tmp_path / "logs")
     session = GeminiLiveSession(
         config=config,
@@ -184,11 +183,12 @@ def test_interruption_clears_playback_and_logs_transcriptions(tmp_path: Path) ->
     lines = (logger.path).read_text(encoding="utf-8").splitlines()
     assert '"event":"input_transcript"' in "\n".join(lines)
     assert '"event":"output_transcript"' in "\n".join(lines)
+    await session.stop()
 
 
 def test_interrupted_message_does_not_requeue_stale_audio(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    audio = AudioIO(output_buffer_bytes=64)
+    audio = AudioIO()
     session = GeminiLiveSession(
         config=config,
         audio=audio,
@@ -214,7 +214,7 @@ def test_interrupted_message_does_not_requeue_stale_audio(tmp_path: Path) -> Non
 
 def test_turn_complete_marks_buffer_to_drain_short_audio(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    audio = AudioIO(output_buffer_bytes=64)
+    audio = AudioIO()
     session = GeminiLiveSession(
         config=config,
         audio=audio,
@@ -243,7 +243,7 @@ def test_turn_complete_marks_buffer_to_drain_short_audio(tmp_path: Path) -> None
 
 @pytest.mark.asyncio
 async def test_ambiguous_transcript_holds_response_until_question_arrives(tmp_path: Path) -> None:
-    audio = AudioIO(output_buffer_bytes=64)
+    audio = AudioIO()
     live = GeminiLiveSession(
         config=make_config(tmp_path),
         audio=audio,
@@ -262,7 +262,7 @@ async def test_ambiguous_transcript_holds_response_until_question_arrives(tmp_pa
 def test_focus_mode_drops_unsolicited_output_but_allows_a_direct_question(tmp_path: Path) -> None:
     state = make_running_state()
     state.set_interaction_mode("focus")
-    audio = AudioIO(output_buffer_bytes=64)
+    audio = AudioIO()
     live = GeminiLiveSession(
         config=make_config(tmp_path),
         audio=audio,
@@ -288,62 +288,9 @@ def test_focus_mode_drops_unsolicited_output_but_allows_a_direct_question(tmp_pa
     assert len(audio.output_buffer) == 4
 
 
-@pytest.mark.asyncio
-async def test_failed_run_allows_exactly_one_focus_interjection(tmp_path: Path) -> None:
-    state = make_running_state()
-    state.set_interaction_mode("focus")
-    audio = AudioIO(output_buffer_bytes=64)
-    live = GeminiLiveSession(
-        config=make_config(tmp_path),
-        audio=audio,
-        system_instruction="test",
-        logger=SessionJsonLogger(tmp_path / "logs"),
-        client=object(),
-        state=state,
-    )
-
-    class RealtimeSession:
-        def __init__(self):
-            self.texts = []
-
-        async def send_realtime_input(self, **kwargs):
-            self.texts.append(kwargs.get("text"))
-
-    sdk_session = RealtimeSession()
-    live._session = sdk_session
-    accepted = await live.notify_failed_run({
-        "resultSignature": "run-1",
-        "caseLabel": "Case 1",
-        "input": "[2,7]",
-        "expected": "[0,1]",
-        "actual": "[]",
-    })
-    assert accepted is True
-    assert "neutral question" in sdk_session.texts[0]
-    live._process_message(
-        types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True)),
-        tool_call_pending=True,
-    )
-    assert live._failure_interjection_active is True
-    live._process_message(types.LiveServerMessage(
-        server_content=types.LiveServerContent(
-            model_turn=types.Content(parts=[types.Part(inline_data=types.Blob(data=b"ask", mime_type="audio/pcm;rate=24000"))]),
-            turn_complete=True,
-        )
-    ))
-    assert audio.output_buffer.read(8) == b"ask"
-
-    live._process_message(types.LiveServerMessage(
-        server_content=types.LiveServerContent(
-            model_turn=types.Content(parts=[types.Part(inline_data=types.Blob(data=b"extra", mime_type="audio/pcm;rate=24000"))])
-        )
-    ))
-    assert len(audio.output_buffer) == 0
-
-
 def test_receiver_stays_connected_across_model_turns(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    audio = AudioIO(output_buffer_bytes=64)
+    audio = AudioIO()
     live = GeminiLiveSession(
         config=config,
         audio=audio,
@@ -414,6 +361,8 @@ class FakeAudio:
     def __init__(self) -> None:
         self.started = False
         self.stopped = False
+        self.output_held = False
+        self.suppressed_input_blocks = 0
 
     def start(self) -> None:
         self.started = True
@@ -427,7 +376,17 @@ class FakeAudio:
     def write_model_audio(self, data: bytes) -> None:
         del data
 
+    def should_forward_microphone(self) -> bool:
+        return True
+
+    def hold_model_output(self) -> None:
+        self.output_held = True
+
+    def release_model_output(self) -> None:
+        self.output_held = False
+
     def clear_output(self) -> None:
+        self.output_held = False
         return None
 
     def finish_model_turn(self) -> None:

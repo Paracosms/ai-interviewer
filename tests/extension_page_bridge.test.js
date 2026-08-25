@@ -149,12 +149,12 @@ test("page bridge switches from a static starter model to the model receiving ed
     console,
   });
 
-  assert.equal(messages[0].payload.modelUri, "starter");
+  assert.equal(messages[0].payload.editorDetected, true);
   editor.setValue("class Solution {\n  int answer = 42;\n}");
   poll();
 
   assert.equal(messages.length, 2);
-  assert.equal(messages[1].payload.modelUri, "editor");
+  assert.equal(messages[1].payload.editorDetected, true);
   assert.equal(messages[1].payload.code, "class Solution {\n  int answer = 42;\n}");
 });
 
@@ -186,80 +186,40 @@ test("page bridge prefers a model attached to the visible editor", () => {
     console,
   });
 
-  assert.equal(messages[0].payload.modelUri, "editor");
+  assert.equal(messages[0].payload.editorDetected, true);
   assert.equal(messages[0].payload.code, "class Solution: pass");
 });
 
-test("page bridge publishes a deduplicated failed Run result and ignores Submit", () => {
+test("page bridge reports an attached empty editor separately from its code", () => {
   const messages = [];
-  let clickListener;
-  let observerCallback;
-  let resultNodes = [];
-  const document = {
-    body: {},
-    addEventListener(type, listener) {
-      if (type === "click") clickListener = listener;
-    },
-    querySelectorAll(selector) {
-      return selector.includes("test-result") ? resultNodes : [];
-    },
-  };
-  class MutationObserver {
-    constructor(callback) {
-      observerCallback = callback;
-    }
-    observe() {}
-  }
   const window = {
     location: { href: "https://leetcode.com/problems/two-sum/", origin: "https://leetcode.com" },
-    document,
-    MutationObserver,
     postMessage(message) {
       messages.push(message);
     },
-    monaco: { editor: { getModels: () => [makeModel("pass", "python", "model")] } },
+    monaco: {
+      editor: {
+        getModels: () => [
+          makeModel("stale starter implementation", "python", "starter"),
+          makeModel("", "python", "editor", { attached: true }),
+        ],
+      },
+    },
   };
   const source = fs.readFileSync(
     path.join(__dirname, "..", "extension", "page_bridge.js"),
     "utf8",
   );
   vm.runInNewContext(source, {
-    Date,
     window,
-    setInterval() { return 1; },
+    setInterval() {
+      return 1;
+    },
     console,
   });
 
-  const button = (label) => ({
-    getAttribute() { return null; },
-    textContent: label,
-  });
-  clickListener({ target: { closest: () => button("Run") } });
-  resultNodes = [{
-    innerText: "Wrong Answer\nCase 1\nInput:\nnums=[2,7]\nOutput:\n[]\nExpected:\n[0,1]",
-  }];
-  observerCallback();
-  observerCallback();
-  const runResults = messages.filter((message) => message.type === "RUN_RESULT");
-  assert.equal(runResults.length, 1);
-  assert.equal(runResults[0].payload.status, "failed");
-  assert.equal(runResults[0].payload.caseLabel, "Case 1");
-
-  clickListener({ target: { closest: () => button("Run") } });
-  observerCallback();
-  assert.equal(messages.filter((message) => message.type === "RUN_RESULT").length, 1);
-  resultNodes = [{
-    innerText: "Runtime Error\nCase 2\nInput:\nnums=[]\nOutput:\nexception\nExpected:\n[]",
-  }];
-  observerCallback();
-  assert.equal(messages.filter((message) => message.type === "RUN_RESULT").length, 2);
-
-  clickListener({ target: { closest: () => button("Run") } });
-  resultNodes = [{ innerText: "Accepted\nAll test cases passed" }];
-  observerCallback();
-  assert.equal(messages.filter((message) => message.type === "RUN_RESULT").length, 2);
-
-  clickListener({ target: { closest: () => button("Submit") } });
-  observerCallback();
-  assert.equal(messages.filter((message) => message.type === "RUN_RESULT").length, 2);
+  assert.equal(messages[0].message?.type || messages[0].type, "CODE_SNAPSHOT");
+  const snapshot = messages[0].message?.payload || messages[0].payload;
+  assert.equal(snapshot.editorDetected, true);
+  assert.equal(snapshot.code, "");
 });

@@ -89,15 +89,6 @@ interviewer audio plays and for a short acoustic tail, preventing the
 interviewer from hearing and interrupting itself. Verbal barge-in is therefore
 unavailable while interviewer audio is playing.
 
-For an audio-only development check before browser integration:
-
-```powershell
-.\.venv\Scripts\python.exe -m interviewer --terminal-spike
-```
-
-This uses the editable `host/interviewer_prompt.txt` with a sample problem and
-requires a working API key and audio setup.
-
 ## Build and sign the Firefox extension
 
 Install Mozilla's build tool once:
@@ -159,8 +150,7 @@ extension.
    the interviewer is speaking.
 11. Say that you are implementing, explaining while coding, or thinking out
     loud to enter Focus mode, or use **Enter Focus** in the popup. The
-    interviewer remains silent until a direct question, an explicit handoff, or
-    a failed LeetCode Run result.
+    interviewer remains silent until a direct question or an explicit handoff.
 12. Ambiguous spoken statements receive a ten-second grace period; direct
     questions and explicit handoffs may receive a prompt response.
 13. Edit code normally in LeetCode; debounced full-buffer updates go to the
@@ -242,7 +232,7 @@ suite uses fake Live sessions and cannot prove external service behavior.
    Google Search grounding quota is unavailable, the interview continues in
    neutral mode without verified hints. Search can have separate billing or
    quota.
-6. No run-result or test-result awareness exists.
+6. No test-result awareness exists.
 7. No post-interview report exists.
 8. Online grounding and multi-source validation reduce solution errors but
    cannot mathematically guarantee that every generated dossier is correct.

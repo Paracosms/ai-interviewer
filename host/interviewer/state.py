@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 from .hint_gate import HintGate
 
@@ -39,12 +38,6 @@ class CodeUpdateResult(str, Enum):
     IGNORED_OLDER = "ignored_older"
 
 
-class RunResultUpdate(str, Enum):
-    ACCEPTED = "accepted"
-    IGNORED_DUPLICATE = "ignored_duplicate"
-    IGNORED_STALE = "ignored_stale"
-
-
 @dataclass(slots=True)
 class InterviewState:
     """The single mutable interview state owned by the local host."""
@@ -52,9 +45,7 @@ class InterviewState:
     status: InterviewStatus = InterviewStatus.STOPPED
     started_at_monotonic: float | None = None
     problem_url: str | None = None
-    problem_slug: str | None = None
     problem_title: str | None = None
-    problem_text: str | None = None
     language: str | None = None
     code: str | None = None
     code_version: int = 0
@@ -62,11 +53,9 @@ class InterviewState:
     last_hint_at: float | None = None
     gemini_connected: bool = False
     last_error: str | None = None
-    latest_usage_metadata: dict[str, Any] | None = None
     problem_analysis_status: str = "unavailable"
     problem_analysis_error: str | None = None
     interaction_mode: InteractionMode = InteractionMode.CONVERSATION
-    latest_run_result: dict[str, Any] | None = None
 
     @property
     def is_active(self) -> bool:
@@ -81,9 +70,7 @@ class InterviewState:
         self,
         *,
         page_url: str,
-        problem_slug: str,
         problem_title: str,
-        problem_text: str,
         language: str,
         code: str,
         code_version: int,
@@ -91,8 +78,6 @@ class InterviewState:
     ) -> None:
         if self.is_active:
             raise StateError("An interview is already active.")
-        if not code:
-            raise StateError("Initial code must be nonempty.")
         if code_version < 0:
             raise StateError("code_version must be nonnegative.")
 
@@ -100,9 +85,7 @@ class InterviewState:
         self.status = InterviewStatus.STARTING
         self.started_at_monotonic = timestamp
         self.problem_url = page_url
-        self.problem_slug = problem_slug
         self.problem_title = problem_title
-        self.problem_text = problem_text
         self.language = language
         self.code = code
         self.code_version = code_version
@@ -110,22 +93,24 @@ class InterviewState:
         self.last_hint_at = None
         self.gemini_connected = False
         self.last_error = None
-        self.latest_usage_metadata = None
         self.problem_analysis_status = "pending"
         self.problem_analysis_error = None
         self.interaction_mode = InteractionMode.CONVERSATION
-        self.latest_run_result = None
 
     def mark_running(self, *, gemini_connected: bool = True) -> None:
-        if not self.is_active:
-            raise StateError("Cannot mark an inactive interview as running.")
+        if self.status not in {InterviewStatus.STARTING, InterviewStatus.RECONNECTING}:
+            raise StateError(
+                f"Cannot mark an interview in {self.status.value} state as running."
+            )
         self.status = InterviewStatus.RUNNING
         self.gemini_connected = gemini_connected
         self.last_error = None
 
     def mark_reconnecting(self) -> None:
-        if not self.is_active:
-            raise StateError("Cannot reconnect an inactive interview.")
+        if self.status is not InterviewStatus.RUNNING:
+            raise StateError(
+                f"Cannot reconnect an interview in {self.status.value} state."
+            )
         self.status = InterviewStatus.RECONNECTING
         self.gemini_connected = False
 
@@ -180,7 +165,6 @@ class InterviewState:
         self.code_version = code_version
         if code_changed:
             self.last_code_change_at = timestamp
-            self.latest_run_result = None
         return CodeUpdateResult.APPLIED
 
     def set_interaction_mode(self, mode: str | InteractionMode) -> InteractionMode:
@@ -193,28 +177,13 @@ class InterviewState:
         self.interaction_mode = resolved
         return resolved
 
-    def accept_failed_run_result(self, result: dict[str, Any]) -> RunResultUpdate:
-        """Store a current, deduplicated failed Run result."""
-
-        if not self.is_active:
-            raise StateError("No interview is currently running.")
-        if result.get("pageUrl") != self.problem_url or result.get("codeVersion") != self.code_version:
-            return RunResultUpdate.IGNORED_STALE
-        signature = result.get("resultSignature")
-        if self.latest_run_result and self.latest_run_result.get("resultSignature") == signature:
-            return RunResultUpdate.IGNORED_DUPLICATE
-        self.latest_run_result = dict(result)
-        return RunResultUpdate.ACCEPTED
-
     def stop(self, *, error: str | None = None) -> None:
         """Clear live interview context after the session has been stopped."""
 
         self.status = InterviewStatus.STOPPED
         self.started_at_monotonic = None
         self.problem_url = None
-        self.problem_slug = None
         self.problem_title = None
-        self.problem_text = None
         self.language = None
         self.code = None
         self.code_version = 0
@@ -222,11 +191,9 @@ class InterviewState:
         self.last_hint_at = None
         self.gemini_connected = False
         self.last_error = error
-        self.latest_usage_metadata = None
         self.problem_analysis_status = "unavailable"
         self.problem_analysis_error = None
         self.interaction_mode = InteractionMode.CONVERSATION
-        self.latest_run_result = None
 
     def elapsed_seconds(self, *, now: float | None = None) -> float:
         if self.started_at_monotonic is None:

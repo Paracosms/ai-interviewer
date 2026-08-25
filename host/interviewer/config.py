@@ -7,10 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-try:
-    from dotenv import dotenv_values
-except ImportError:  # pragma: no cover - setup installs python-dotenv.
-    dotenv_values = None  # type: ignore[assignment]
+from dotenv import dotenv_values
 
 from . import HOST_VERSION
 
@@ -105,38 +102,12 @@ def parse_local_port(raw_value: object, *, variable_name: str = "LOCAL_PORT") ->
     return port
 
 
-def _fallback_dotenv_values(path: Path) -> dict[str, str]:
-    """Read the small KEY=VALUE subset needed if python-dotenv is unavailable."""
-
-    if not path.is_file():
-        return {}
-
-    values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        values[key] = value
-    return values
-
-
 def _read_environment_file(path: Path) -> dict[str, str]:
-    if dotenv_values is not None:
-        return {
-            key: str(value)
-            for key, value in dotenv_values(path).items()
-            if value is not None
-        }
-    return _fallback_dotenv_values(path)
+    return {
+        key: str(value)
+        for key, value in dotenv_values(path).items()
+        if value is not None
+    }
 
 
 def _optional_text(values: Mapping[str, object], key: str) -> str | None:
@@ -151,13 +122,10 @@ def load_config(
     env_file: str | Path | None = None,
     *,
     environ: Mapping[str, object] | None = None,
-    require_api_key: bool = True,
 ) -> HostConfig:
     """Load and validate host configuration.
 
-    Values from the process environment override values in ``host/.env``. The
-    optional ``require_api_key=False`` mode is useful for local endpoint tests;
-    normal host startup keeps the key requirement enabled.
+    Values from the process environment override values in ``host/.env``.
     """
 
     resolved_env_file = (
@@ -169,7 +137,7 @@ def load_config(
     values.update(dict(os.environ if environ is None else environ))
 
     api_key = str(values.get("GEMINI_API_KEY", "") or "").strip()
-    if require_api_key and not api_key:
+    if not api_key:
         raise ConfigurationError("GEMINI_API_KEY is missing from host/.env.")
 
     local_host = str(values.get("LOCAL_HOST", DEFAULT_LOCAL_HOST) or "").strip()
@@ -193,16 +161,21 @@ def load_config(
         allowed = ", ".join(sorted(VALID_THINKING_LEVELS))
         raise ConfigurationError(f"GEMINI_THINKING_LEVEL must be one of: {allowed}.")
 
+    gemini_voice = (
+        str(values.get("GEMINI_VOICE", DEFAULT_GEMINI_VOICE) or "").strip()
+        or DEFAULT_GEMINI_VOICE
+    )
+    if gemini_voice not in SUPPORTED_GEMINI_VOICES:
+        allowed = ", ".join(sorted(SUPPORTED_GEMINI_VOICES))
+        raise ConfigurationError(f"GEMINI_VOICE must be one of: {allowed}.")
+
     return HostConfig(
         gemini_api_key=api_key,
         gemini_model=(
             str(values.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL) or "").strip()
             or DEFAULT_GEMINI_MODEL
         ),
-        gemini_voice=(
-            str(values.get("GEMINI_VOICE", DEFAULT_GEMINI_VOICE) or "").strip()
-            or DEFAULT_GEMINI_VOICE
-        ),
+        gemini_voice=gemini_voice,
         gemini_thinking_level=thinking_level,
         local_host=local_host,
         local_port=local_port,

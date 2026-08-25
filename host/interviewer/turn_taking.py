@@ -37,16 +37,3 @@ def permits_quick_response(text: str) -> bool:
     if len(words) < 2:
         return False
     return normalized.endswith("?") or _QUESTION_START.match(normalized) is not None
-
-
-def is_focus_exit_handoff(text: str) -> bool:
-    normalized = " ".join(str(text or "").strip().lower().split())
-    return any(
-        phrase in normalized
-        for phrase in (
-            "i'm done",
-            "i am done",
-            "ready for feedback",
-            "ready for your feedback",
-        )
-    )

@@ -120,17 +120,15 @@ function loadContent({ title = "Two Sum", description = "", descriptionSelector 
   };
 }
 
-function latestPageState(messages) {
-  const stateMessage = [...messages]
-    .reverse()
-    .find((message) => message.type === "PAGE_STATE_UPDATE");
-  return stateMessage?.payload;
+async function latestPageState(harness) {
+  const response = await harness.requestPageState({ type: "REQUEST_PAGE_STATE" });
+  return response.pageState;
 }
 
-test("content script reports actionable extraction failure", () => {
+test("content script reports actionable extraction failure", async () => {
   const harness = loadContent({ title: "Two Sum" });
   harness.tick();
-  const state = latestPageState(harness.messages);
+  const state = await latestPageState(harness);
   assert.equal(state.detected, false);
   assert.equal(
     state.error,
@@ -138,7 +136,7 @@ test("content script reports actionable extraction failure", () => {
   );
 });
 
-test("content script combines the problem and complete code snapshot", () => {
+test("content script combines the problem and complete code snapshot", async () => {
   const harness = loadContent({ description: "Description text. ".repeat(20) });
   harness.tick();
   harness.dispatch({
@@ -148,11 +146,11 @@ test("content script combines the problem and complete code snapshot", () => {
     payload: {
       code: "class Solution {\n  // off-screen comment\n}",
       language: "java",
-      modelUri: "inmemory://model",
+      editorDetected: true,
       version: 7,
     },
   });
-  const state = latestPageState(harness.messages);
+  const state = await latestPageState(harness);
   assert.equal(state.detected, true);
   assert.equal(state.problemTitle, "Two Sum");
   assert.equal(state.problemSlug, "two-sum");
@@ -171,15 +169,32 @@ test("content script combines the problem and complete code snapshot", () => {
   });
 });
 
-test("content script supports the data-key description container", () => {
+test("content script supports the data-key description container", async () => {
   const harness = loadContent({
     description: "Description text. ".repeat(20),
     descriptionSelector: "data-key",
   });
   harness.tick();
-  const state = latestPageState(harness.messages);
+  const state = await latestPageState(harness);
   assert.equal(state.problemText, "Description text. ".repeat(20).trim());
   assert.equal(state.error, "LeetCode editor model was not detected. Reload the problem page and try again.");
+});
+
+test("content script treats an empty detected editor as valid code", async () => {
+  const harness = loadContent({ description: "Description text. ".repeat(20) });
+  harness.dispatch({
+    source: "leetcode-ai-interviewer-page-bridge",
+    protocolVersion: 1,
+    type: "CODE_SNAPSHOT",
+    payload: { code: "", language: "python", editorDetected: true, version: 1 },
+  });
+
+  const state = await latestPageState(harness);
+  assert.equal(state.detected, true);
+  assert.equal(state.editorDetected, true);
+  harness.flushCodeDebounce();
+  const update = harness.messages.find((message) => message.type === "CODE_UPDATE");
+  assert.equal(update.payload.code, "");
 });
 
 test("content script ignores spoofed page messages from another window", () => {
@@ -191,37 +206,9 @@ test("content script ignores spoofed page messages from another window", () => {
       source: "leetcode-ai-interviewer-page-bridge",
       protocolVersion: 1,
       type: "CODE_SNAPSHOT",
-      payload: { code: "pass", language: "python", modelUri: null, version: 1 },
+      payload: { code: "pass", language: "python", editorDetected: true, version: 1 },
     },
     {},
   );
   assert.equal(harness.messages.length, before);
-});
-
-test("content script attaches authoritative code version to failed Run results", async () => {
-  const harness = loadContent({ description: "Description text. ".repeat(20) });
-  harness.dispatch({
-    source: "leetcode-ai-interviewer-page-bridge",
-    protocolVersion: 1,
-    type: "CODE_SNAPSHOT",
-    payload: { code: "pass", language: "python", modelUri: null, version: 1 },
-  });
-  harness.dispatch({
-    source: "leetcode-ai-interviewer-page-bridge",
-    protocolVersion: 1,
-    type: "RUN_RESULT",
-    payload: {
-      status: "failed",
-      resultSignature: "run-deadbeef",
-      caseLabel: "Case 1",
-      input: "nums=[2,7]",
-      expected: "[0,1]",
-      actual: "[]",
-    },
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-  const result = harness.messages.find((message) => message.type === "RUN_RESULT");
-  assert.equal(result.payload.codeVersion, 1);
-  assert.equal(result.payload.pageUrl, "https://leetcode.com/problems/two-sum/");
-  assert.equal(result.payload.status, "failed");
 });

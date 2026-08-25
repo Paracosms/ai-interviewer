@@ -5,21 +5,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from pathlib import Path
 import sys
 
 from aiohttp import web
 
-from .audio_io import AudioError, AudioIO, list_audio_devices
+from .audio_io import AudioError, list_audio_devices
 from .config import ConfigurationError, load_config
 from .gemini_session import (
-    GeminiLiveSession,
     GeminiSessionError,
     HostSessionManager,
-    build_system_instruction,
 )
 from .http_api import create_app
-from .logging_utils import SessionJsonLogger
 from .state import InterviewState
 
 
@@ -33,11 +29,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-audio-devices",
         action="store_true",
         help="List PortAudio input/output devices and exit.",
-    )
-    parser.add_argument(
-        "--terminal-spike",
-        action="store_true",
-        help="Run the development audio-only Gemini Live spike with a sample problem.",
     )
     return parser
 
@@ -57,23 +48,14 @@ def main(argv: list[str] | None = None) -> int:
             level=getattr(logging, config.log_level),
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
-        if args.terminal_spike:
-            asyncio.run(_run_terminal_spike(config))
-        else:
-            state = InterviewState()
-            manager = HostSessionManager(config=config)
-            app = create_app(
-                config,
-                state=state,
-                session_starter=manager.start,
-                session_stopper=manager.stop,
-                code_update_logger=manager.log_code_update,
-                mode_change_logger=manager.log_interaction_mode,
-                run_result_handler=manager.handle_run_result,
-                volume_getter=manager.get_volume,
-                volume_setter=manager.set_volume,
-            )
-            asyncio.run(_serve_config(config, app, manager))
+        state = InterviewState()
+        manager = HostSessionManager(config=config)
+        app = create_app(
+            config,
+            controller=manager,
+            state=state,
+        )
+        asyncio.run(_serve_config(config, app, manager))
     except ConfigurationError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -86,36 +68,6 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 0
     return 0
-
-
-async def _run_terminal_spike(config) -> None:
-    """Development-only audio check before Firefox integration exists."""
-
-    prompt_path = Path(__file__).resolve().parents[1] / "interviewer_prompt.txt"
-    system_instruction = build_system_instruction(
-        prompt_path=prompt_path,
-        problem_title="Two Sum (audio-only development spike)",
-        problem_text=(
-            "Given an integer array nums and an integer target, return the indices "
-            "of two numbers whose sum is target. Assume exactly one answer exists."
-        ),
-        language="python3",
-        code="class Solution:\n    def twoSum(self, nums, target):\n        pass",
-    )
-    audio = AudioIO(
-        input_device=config.audio_input_device,
-        output_device=config.audio_output_device,
-    )
-    session = GeminiLiveSession(
-        config=config,
-        audio=audio,
-        system_instruction=system_instruction,
-        logger=SessionJsonLogger(config.logs_dir),
-    )
-    try:
-        await session.run()
-    finally:
-        await session.stop()
 
 
 async def _serve_config(config, app, session_manager=None) -> None:

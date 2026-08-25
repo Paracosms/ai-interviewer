@@ -143,21 +143,12 @@
       pageState = null;
       return;
     }
-    let directPageState = null;
+    let response = null;
     try {
-      const response = await browser.tabs.sendMessage(activeTabId, { type: "REQUEST_PAGE_STATE" });
-      directPageState = response?.pageState || null;
+      response = await browser.tabs.sendMessage(activeTabId, { type: "REQUEST_PAGE_STATE" });
     } catch (_error) {
       // The active tab may not be a matching LeetCode page.
     }
-    if (directPageState) {
-      pageState = directPageState;
-      return;
-    }
-    const response = await browser.runtime.sendMessage({
-      type: "GET_PAGE_STATE",
-      tabId: activeTabId,
-    });
     pageState = response?.pageState || null;
   }
 
@@ -247,7 +238,7 @@
 
   async function startInterview() {
     if (!problemDetected()) {
-      showMessage(elements.actionMessage, "The LeetCode problem and code must be detected before starting.");
+      showMessage(elements.actionMessage, "The LeetCode problem and editor must be detected before starting.");
       return;
     }
     elements.start.disabled = true;

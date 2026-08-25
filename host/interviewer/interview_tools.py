@@ -103,7 +103,6 @@ class InterviewToolService:
             "hintsEligible": self.state.hints_eligible(self.hint_gate, now=now),
             "secondsSinceCodeChange": int(self.state.seconds_since_code_change(now=now)),
             "interactionMode": self.state.interaction_mode.value,
-            "latestRunResult": self.state.latest_run_result,
         }
         if self.problem_analysis is not None:
             result["problemAnalysis"] = self.problem_analysis.tool_payload()

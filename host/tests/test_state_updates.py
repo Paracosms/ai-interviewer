@@ -6,7 +6,6 @@ from interviewer.state import (
     InteractionMode,
     InterviewState,
     ProblemChangedError,
-    RunResultUpdate,
 )
 from interviewer.gemini_session import HostSessionManager
 
@@ -15,9 +14,7 @@ def make_state() -> InterviewState:
     state = InterviewState()
     state.begin(
         page_url="https://leetcode.com/problems/two-sum/",
-        problem_slug="two-sum",
         problem_title="Two Sum",
-        problem_text="Find two numbers that add to a target.",
         language="python3",
         code="class Solution: pass",
         code_version=1,
@@ -32,13 +29,13 @@ def test_newer_code_version_replaces_old_code() -> None:
     result = state.update_code(
         page_url=state.problem_url,
         language="python3",
-        code="class Solution:\n    pass",
+        code="",
         code_version=2,
         now=130,
     )
     assert result is CodeUpdateResult.APPLIED
     assert state.code_version == 2
-    assert state.code == "class Solution:\n    pass"
+    assert state.code == ""
     assert state.last_code_change_at == 130
 
 
@@ -131,26 +128,21 @@ def test_stopping_is_an_active_state() -> None:
     assert state.gemini_connected is False
 
 
-def test_interaction_mode_and_failed_run_result_are_application_owned() -> None:
+def test_interaction_mode_is_application_owned() -> None:
     state = make_state()
     assert state.set_interaction_mode("focus") is InteractionMode.FOCUS
-    result = {
-        "pageUrl": state.problem_url,
-        "codeVersion": state.code_version,
-        "status": "failed",
-        "resultSignature": "failure-1",
-    }
-    assert state.accept_failed_run_result(result) is RunResultUpdate.ACCEPTED
-    assert state.accept_failed_run_result(result) is RunResultUpdate.IGNORED_DUPLICATE
-    stale = {**result, "resultSignature": "failure-2", "codeVersion": 0}
-    assert state.accept_failed_run_result(stale) is RunResultUpdate.IGNORED_STALE
     snapshot = state.public_snapshot(model="model", hint_gate=HintGate())
     assert snapshot["interactionMode"] == "focus"
-    state.update_code(
-        page_url=state.problem_url,
-        language="python3",
-        code="new code",
-        code_version=2,
-        now=200,
-    )
-    assert state.latest_run_result is None
+
+
+def test_stopping_rejects_late_connection_callbacks() -> None:
+    state = make_state()
+    state.mark_stopping()
+    with pytest.raises(Exception, match="state as running"):
+        state.mark_running()
+    with pytest.raises(Exception, match="state"):
+        state.mark_reconnecting()
+    HostSessionManager._mark_connected(state)
+    HostSessionManager._mark_reconnecting(state)
+    assert state.status.value == "stopping"
+    assert state.gemini_connected is False

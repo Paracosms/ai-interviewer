@@ -40,12 +40,11 @@ def start_payload():
 class FakeLiveSession:
     instances = []
 
-    def __init__(self, *, on_ready=None, on_usage=None, on_reconnecting=None, **kwargs):
+    def __init__(self, *, on_ready=None, on_reconnecting=None, **kwargs):
         self.system_instruction = kwargs["system_instruction"]
         self.voice = kwargs["config"].gemini_voice
         self.tool_handler = kwargs["tool_handler"]
         self.on_ready = on_ready
-        self.on_usage = on_usage
         self.on_reconnecting = on_reconnecting
         self.stopped = asyncio.Event()
         self.started = False
@@ -145,9 +144,7 @@ async def test_live_starts_while_problem_analysis_remains_in_background(tmp_path
     state = InterviewState()
     state.begin(
         page_url=payload["pageUrl"],
-        problem_slug=payload["problemSlug"],
         problem_title=payload["problemTitle"],
-        problem_text=payload["problemText"],
         language=payload["language"],
         code=payload["code"],
         code_version=payload["codeVersion"],
@@ -196,9 +193,7 @@ async def test_selected_voice_is_used_for_live_session(tmp_path, monkeypatch):
     state = InterviewState()
     state.begin(
         page_url=payload["pageUrl"],
-        problem_slug=payload["problemSlug"],
         problem_title=payload["problemTitle"],
-        problem_text=payload["problemText"],
         language=payload["language"],
         code=payload["code"],
         code_version=payload["codeVersion"],
@@ -226,9 +221,7 @@ async def test_problem_analysis_failure_does_not_stop_live_interview(tmp_path, m
     state = InterviewState()
     state.begin(
         page_url=payload["pageUrl"],
-        problem_slug=payload["problemSlug"],
         problem_title=payload["problemTitle"],
-        problem_text=payload["problemText"],
         language=payload["language"],
         code=payload["code"],
         code_version=payload["codeVersion"],
@@ -267,10 +260,8 @@ async def test_http_manager_lifecycle_updates_authoritative_state(tmp_path, monk
     (tmp_path / "prompt.txt").write_text("interviewer behavior", encoding="utf-8")
     app = create_app(
         config,
+        controller=manager,
         state=state,
-        session_starter=manager.start,
-        session_stopper=manager.stop,
-        code_update_logger=manager.log_code_update,
     )
     client = TestClient(TestServer(app))
     await client.start_server()
