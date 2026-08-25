@@ -9,7 +9,7 @@ The application has two local pieces:
 - `extension/`: a Mozilla-signed, self-distributed Firefox WebExtension that
   reads the active LeetCode problem and complete Monaco editor buffer;
 - `host/`: a Python localhost application that owns audio, Gemini Live,
-  web-grounded problem analysis, interview state, timing, hint authorization,
+  statement-based problem analysis, interview state, timing, hint authorization,
   and JSONL session logs.
 
 The host binds only to `127.0.0.1`. The extension and host must use the same
@@ -24,13 +24,15 @@ configurable port, defaulting to `8765`.
 - A Google AI Studio Gemini API key with free-tier access
 - Headphones or a headset
 
-At every interview start, the host makes exactly one request to the fixed
-`gemini-3.7-flash` model. That request uses Google Search grounding and a
-structured schema to verify the intended solution and prepare a progressive
-Socratic hint ladder. It runs concurrently with the configured Gemini Live
-voice session, so it does not delay interview startup. There is no alternate
-analysis model or silent fallback, and the application never makes an OpenAI
-request.
+At every interview start, the host makes exactly one background request to the
+fixed `gemini-3.7-flash` model. The request uses structured JSON output and
+high thinking, but no Google Search or any other Gemini built-in tool. It
+analyzes the complete supplied problem statement and constraints to prepare a
+progressive Socratic hint ladder. This keeps the request compatible with
+ordinary free-tier model usage. It runs concurrently with the configured
+Gemini Live voice session, so it does not delay interview startup. There is no
+alternate analysis model or paid fallback, and the application never makes an
+OpenAI request.
 
 ## First-time host setup
 
@@ -157,18 +159,22 @@ extension.
     localhost host.
 14. Click **Stop Interview** when finished.
 
-The host sends the problem to Gemini 3.7 Flash with Google Search enabled while
-the Live interviewer begins its greeting and neutral opening questions. The
-analysis requires structured output, evidence that search ran, and at least two
-distinct grounded web sources. Once ready, the private verified solution,
-evaluation checkpoints, and hint ladder become available to the Live
-interviewer through its existing tools. Until then, solution-specific judgments
-and hints are prohibited. The hint timer and tool gate still control whether the
-interviewer may use a verified hint.
+While the Live interviewer begins its greeting and neutral opening questions,
+the background analysis parses the statement and constraints, considers a
+baseline and competing approaches, and builds a private model-generated
+dossier. The dossier includes the intended solution, correctness and
+complexity guidance, constraint implications, interviewer checkpoints, common
+wrong turns, confidence, assumptions, and a 5–8 question hint ladder. It may be
+wrong; confidence and assumptions make uncertainty explicit. Once ready, the
+dossier becomes available to the Live interviewer through its existing tools.
+Until then, solution-specific judgments and hints are prohibited. The hint
+timer and tool gate still control whether the interviewer may use a precomputed
+hint.
 
-If background analysis fails, the voice interview continues, but verified hints
-and solution-specific evaluation remain unavailable. The popup and session
-status report the analysis failure separately from the Live session status.
+If background analysis fails, the voice interview continues in neutral mode.
+The popup and session status report the analysis failure separately from the
+Live session status. No paid fallback is attempted, and no source list is
+created or stored.
 
 The host sends the problem, current code when requested by the model tool,
 microphone audio, private interviewer dossier, and conversation context to
@@ -198,7 +204,7 @@ node --check extension\popup\popup.js
 ```
 
 The Python tests cover state versioning, port/configuration validation,
-localhost endpoints, the single grounded analysis request, dossier validation,
+localhost endpoints, the single tool-free structured analysis request, dossier validation,
 hint timing, tool authorization, audio buffering and device failure, Live
 configuration, interruption handling, usage logging, logging redaction,
 transcript formatting and shutdown generation, and mocked session renewal. The
@@ -228,14 +234,13 @@ suite uses fake Live sessions and cannot prove external service behavior.
 4. The configured Gemini Live model is a preview model and its identifier or
    availability may change. The analysis model is fixed to stable
    `gemini-3.7-flash`.
-5. The application stops when Live session quota is unavailable. If analysis or
-   Google Search grounding quota is unavailable, the interview continues in
-   neutral mode without verified hints. Search can have separate billing or
-   quota.
+5. The application stops when Live session quota is unavailable. If the single
+   statement-based analysis request reaches a Gemini rate limit or project
+   quota, the interview continues in neutral mode without precomputed hints.
 6. No test-result awareness exists.
 7. No post-interview report exists.
-8. Online grounding and multi-source validation reduce solution errors but
-   cannot mathematically guarantee that every generated dossier is correct.
+8. The dossier is model-generated from the supplied statement and constraints;
+   it is useful but not externally verified and cannot be guaranteed correct.
 9. No theoretical guarantee can prevent every possible model-policy violation,
    although the private dossier, timer, tool gate, prompt rules, and acceptance
    tests substantially constrain assistance.

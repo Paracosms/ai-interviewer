@@ -21,7 +21,7 @@ def build_interview_tools() -> list[types.Tool]:
         description=(
             "Return the latest authoritative problem, language, complete code buffer, "
             "code version, elapsed time, hint status, and background problem-analysis status. "
-            "Once analysis is ready, this also returns the private verified solution dossier "
+            "Once analysis is ready, this also returns the private solution dossier "
             "and hint ladder. Call before code-specific or solution-specific discussion."
         ),
         parameters_json_schema={
@@ -122,13 +122,11 @@ class InterviewToolService:
         if self.problem_analysis is not None and self.problem_analysis.status != "ready":
             if self.problem_analysis.status == "error":
                 reason = (
-                    "Verified hints are unavailable because background problem analysis failed. "
-                    "Continue as a neutral interviewer without solution-specific assistance."
+                    "Interviewer hints are unavailable because background problem analysis failed."
                 )
             else:
                 reason = (
-                    "Verified hints are still being prepared. Continue as a neutral interviewer "
-                    "and do not generate a hint from your own solution attempt."
+                    "Interviewer hints are still being prepared."
                 )
             return {
                 "allowed": False,

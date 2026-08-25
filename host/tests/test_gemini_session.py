@@ -92,10 +92,17 @@ def test_runtime_prompt_is_appended_to_editable_prompt(tmp_path: Path) -> None:
     assert "RUNTIME RULES" in instruction
     assert "Two Sum" in instruction
     assert "pass" in instruction
+    assert "PRIVATE INTERVIEWER DOSSIER" in instruction
+    assert "not externally searched or verified" in instruction
+    assert "analysis_confidence is low" in instruction
+    assert "request_micro_hint" in instruction
 
 
 def test_common_quota_error_is_user_readable() -> None:
-    assert "free-tier quota" in classify_gemini_error(ApiErrorForTest())
+    message = classify_gemini_error(ApiErrorForTest())
+    assert "rate limit or project quota" in message
+    assert "free-tier" not in message
+    assert "No paid fallback" in message
 
 
 def test_auth_and_model_errors_are_not_misreported_as_network_failures() -> None:

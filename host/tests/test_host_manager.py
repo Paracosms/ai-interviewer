@@ -8,10 +8,10 @@ from interviewer.config import load_config
 from interviewer.gemini_session import HostSessionManager
 from interviewer.http_api import create_app
 from interviewer.problem_analysis import (
-    GroundedProblemAnalysis,
-    GroundedSource,
     IntendedSolution,
+    InterviewCheckpoint,
     InterviewHint,
+    ProblemAnalysis,
     ProblemDossier,
 )
 from interviewer.state import InterviewState
@@ -66,13 +66,17 @@ class FakeLiveSession:
 
 
 def fake_problem_analysis():
-    return GroundedProblemAnalysis(
+    return ProblemAnalysis(
         dossier=ProblemDossier(
-            verified_problem_title="Two Sum",
-            problem_identity_matches=True,
-            verification_summary="Two independent sources match the supplied problem and constraints.",
-            sources_agree=True,
-            source_consensus="Both sources identify the same optimal hash-map solution and complexity.",
+            problem_title="Two Sum",
+            statement_summary="Find two numbers at distinct positions that add to the target.",
+            constraint_implications=[
+                "The input can be large enough that a nested scan is expensive.",
+                "The result must retain the required positions rather than only values.",
+            ],
+            analysis_confidence="high",
+            confidence_reason="The supplied statement gives a clear target relationship and constraints.",
+            assumptions=[],
             intended_solution=IntendedSolution(
                 algorithm="single-pass hash map",
                 summary="Store each prior value and look up the complement while scanning once.",
@@ -81,7 +85,26 @@ def fake_problem_analysis():
                 time_complexity="O(n)",
                 space_complexity="O(n)",
             ),
-            interviewer_checkpoints=["states complement", "avoids reuse", "analyzes complexity"],
+            interviewer_checkpoints=[
+                InterviewCheckpoint(
+                    topic="target relationship",
+                    evidence_of_understanding="The candidate explains the relationship needed to reach the target.",
+                    concern_signals=["does not connect the target to prior values"],
+                    neutral_follow_up_question="What relationship between two values would satisfy the target?",
+                ),
+                InterviewCheckpoint(
+                    topic="distinct positions",
+                    evidence_of_understanding="The candidate keeps the two selected positions distinct.",
+                    concern_signals=["reuses one position"],
+                    neutral_follow_up_question="How do you ensure the two selected positions are different?",
+                ),
+                InterviewCheckpoint(
+                    topic="complexity",
+                    evidence_of_understanding="The candidate explains the work performed for each input item.",
+                    concern_signals=["repeats a full scan for every item"],
+                    neutral_follow_up_question="How much work is performed for each item in your approach?",
+                ),
+            ],
             common_wrong_turns=["uses the same element twice", "returns values instead of indices"],
             hint_ladder=[
                 InterviewHint(
@@ -92,10 +115,6 @@ def fake_problem_analysis():
                 )
                 for index in range(1, 6)
             ],
-        ),
-        sources=(
-            GroundedSource("LeetCode", "https://leetcode.com/problems/two-sum/"),
-            GroundedSource("Independent", "https://example.com/two-sum"),
         ),
     )
 
@@ -125,7 +144,7 @@ class FailingProblemAnalyzer:
     async def analyze(self, **kwargs):
         del kwargs
         await asyncio.sleep(0)
-        raise RuntimeError("grounded analysis unavailable")
+        raise RuntimeError("statement analysis unavailable")
 
 
 @pytest.mark.asyncio
@@ -172,7 +191,8 @@ async def test_live_starts_while_problem_analysis_remains_in_background(tmp_path
             "get_current_interview_state", {}
         )
         assert ready["problemAnalysis"]["status"] == "ready"
-        assert "verifiedProblemDossier" in ready["problemAnalysis"]
+        assert "problemDossier" in ready["problemAnalysis"]
+        assert set(ready["problemAnalysis"]) == {"status", "problemDossier"}
     finally:
         await manager.stop()
 
@@ -236,7 +256,7 @@ async def test_problem_analysis_failure_does_not_stop_live_interview(tmp_path, m
         assert FakeLiveSession.instances[0].started is True
         assert state.gemini_connected is True
         assert state.problem_analysis_status == "error"
-        assert "grounded analysis unavailable" in state.problem_analysis_error
+        assert "statement analysis unavailable" in state.problem_analysis_error
         tool_state = await FakeLiveSession.instances[0].tool_handler(
             "get_current_interview_state", {}
         )
@@ -273,7 +293,7 @@ async def test_http_manager_lifecycle_updates_authoritative_state(tmp_path, monk
         assert state.gemini_connected is True
         assert len(FakeLiveSession.instances) == 1
         assert len(analyzer.calls) == 1
-        assert "PRIVATE VERIFIED INTERVIEWER DOSSIER" in FakeLiveSession.instances[0].system_instruction
+        assert "PRIVATE INTERVIEWER DOSSIER" in FakeLiveSession.instances[0].system_instruction
         assert "still being prepared in the background" in FakeLiveSession.instances[0].system_instruction
         assert "single-pass hash map" not in FakeLiveSession.instances[0].system_instruction
         tool_state = await FakeLiveSession.instances[0].tool_handler(
@@ -281,9 +301,10 @@ async def test_http_manager_lifecycle_updates_authoritative_state(tmp_path, monk
         )
         assert tool_state["problemAnalysis"]["status"] == "ready"
         assert (
-            tool_state["problemAnalysis"]["verifiedProblemDossier"]["intended_solution"]["algorithm"]
+            tool_state["problemAnalysis"]["problemDossier"]["intended_solution"]["algorithm"]
             == "single-pass hash map"
         )
+        assert set(tool_state["problemAnalysis"]) == {"status", "problemDossier"}
         assert state.problem_analysis_status == "ready"
 
         updated = await client.post(

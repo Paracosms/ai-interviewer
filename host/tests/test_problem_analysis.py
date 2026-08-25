@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -6,54 +7,97 @@ from interviewer.problem_analysis import (
     PROBLEM_ANALYSIS_MODEL,
     GeminiProblemAnalyzer,
     ProblemAnalysisError,
+    ProblemDossier,
 )
 
 
-def dossier_json():
-    hints = [
-        {
-            "order": index,
-            "diagnostic_target": f"candidate checkpoint {index}",
-            "when_to_use": f"candidate is stuck at checkpoint {index}",
-            "socratic_question": f"What information would help you at checkpoint {index}?",
-        }
-        for index in range(1, 6)
-    ]
-    return """{
-      "verified_problem_title": "Two Sum",
-      "problem_identity_matches": true,
-      "verification_summary": "The searched sources match the supplied title, statement, and constraints.",
-      "sources_agree": true,
-      "source_consensus": "The sources agree that a single-pass complement lookup is the intended optimum.",
-      "intended_solution": {
-        "algorithm": "single-pass hash map",
-        "summary": "Scan once, storing prior values and looking up the needed complement.",
-        "key_invariant": "The map contains exactly the values and indices seen before the current item.",
-        "correctness_reasoning": "A complement lookup finds precisely a valid earlier partner without reusing the current item.",
-        "time_complexity": "O(n)",
-        "space_complexity": "O(n)"
-      },
-      "interviewer_checkpoints": ["complement", "no reuse", "complexity"],
-      "common_wrong_turns": ["same element twice", "returns values"],
-      "hint_ladder": %s
-    }""" % __import__("json").dumps(hints)
+def _dossier_payload(*, confidence="high"):
+    return {
+        "problem_title": "Two Sum",
+        "statement_summary": "Find two distinct positions whose values add up to the target value.",
+        "constraint_implications": [
+            "The input can be large enough that repeated full scans are too slow.",
+            "The output must preserve positions, not only the selected values.",
+        ],
+        "analysis_confidence": confidence,
+        "confidence_reason": "The supplied statement and constraints are complete and unambiguous.",
+        "assumptions": [],
+        "intended_solution": {
+            "algorithm": "single-pass hash map",
+            "summary": "Scan once while retaining prior values and looking up each needed complement.",
+            "key_invariant": "The retained entries represent exactly the values seen before the current item.",
+            "correctness_reasoning": "A match is found precisely when the current value has a valid earlier partner.",
+            "time_complexity": "O(n)",
+            "space_complexity": "O(n)",
+        },
+        "interviewer_checkpoints": [
+            {
+                "topic": "target relationship",
+                "evidence_of_understanding": "The candidate connects each chosen value to the target.",
+                "concern_signals": ["does not explain how a pair reaches the target"],
+                "neutral_follow_up_question": "What relationship between the two values must hold?",
+            },
+            {
+                "topic": "distinct positions",
+                "evidence_of_understanding": "The candidate accounts for selecting two different positions.",
+                "concern_signals": ["allows one position to be reused"],
+                "neutral_follow_up_question": "How does your approach keep the selected positions distinct?",
+            },
+            {
+                "topic": "complexity",
+                "evidence_of_understanding": "The candidate relates each operation to the input size.",
+                "concern_signals": ["does not account for repeated scans"],
+                "neutral_follow_up_question": "How does the amount of work grow with the input?",
+            },
+        ],
+        "common_wrong_turns": [
+            "reuses the current position as both members of the pair",
+            "returns values when the statement requires positions",
+        ],
+        "hint_ladder": [
+            {
+                "order": 1,
+                "diagnostic_target": "candidate's interpretation of the required output",
+                "when_to_use": "The candidate has not clearly restated what must be returned.",
+                "socratic_question": "What exactly must your result identify?",
+            },
+            {
+                "order": 2,
+                "diagnostic_target": "relationship required by the target",
+                "when_to_use": "The candidate is searching without using the target relationship.",
+                "socratic_question": "What relationship would let one value complete another?",
+            },
+            {
+                "order": 3,
+                "diagnostic_target": "information retained from earlier positions",
+                "when_to_use": "The candidate repeats work over values already considered.",
+                "socratic_question": "What information from earlier positions could you retain?",
+            },
+            {
+                "order": 4,
+                "diagnostic_target": "invariant over the retained information",
+                "when_to_use": "The candidate has chosen a representation but cannot explain what it means.",
+                "socratic_question": "What should be true about the information you have retained so far?",
+            },
+            {
+                "order": 5,
+                "diagnostic_target": "avoiding repeated work",
+                "when_to_use": "The candidate's approach still scans the earlier values repeatedly.",
+                "socratic_question": "How could each new value use the retained information without another full scan?",
+            },
+        ],
+    }
 
 
-def response(*, grounded=True):
-    metadata = None
-    if grounded:
-        metadata = SimpleNamespace(
-            web_search_queries=["LeetCode Two Sum solution"],
-            grounding_chunks=[
-                SimpleNamespace(web=SimpleNamespace(title="LeetCode", uri="https://leetcode.com/two-sum")),
-                SimpleNamespace(web=SimpleNamespace(title="Reference", uri="https://example.com/two-sum")),
-            ],
-        )
-    return SimpleNamespace(
-        candidates=[SimpleNamespace(grounding_metadata=metadata)],
-        parsed=None,
-        text=dossier_json(),
-    )
+def dossier_json(**overrides):
+    payload = _dossier_payload()
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+def response_with_text(text):
+    # Deliberately contains only the plain structured response fields.
+    return SimpleNamespace(parsed=None, text=text)
 
 
 class FakeModels:
@@ -72,38 +116,141 @@ class FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_analysis_makes_one_grounded_structured_request():
-    client = FakeClient(response())
+async def test_analysis_makes_one_tool_free_structured_request():
+    client = FakeClient(response_with_text(dossier_json()))
     analyzer = GeminiProblemAnalyzer(api_key="test", client=client)
 
     analysis = await analyzer.analyze(
         problem_slug="two-sum",
         problem_title="Two Sum",
-        problem_text="Find two indices whose values sum to target.",
+        problem_text="Find two indices whose values sum to target under the stated constraints.",
     )
 
     assert len(client.models.calls) == 1
     call = client.models.calls[0]
     assert call["model"] == PROBLEM_ANALYSIS_MODEL == "gemini-3.7-flash"
-    assert "MUST use Google Search" in call["contents"]
+    assert "sole authoritative source" in call["contents"]
+    assert "Find two indices" in call["contents"]
+    assert "google search" not in call["contents"].lower()
+    assert "tools" not in call
+
     dumped_config = call["config"].model_dump(exclude_none=True, by_alias=True)
-    assert dumped_config["tools"] == [{"googleSearch": {}}]
     assert dumped_config["responseMimeType"] == "application/json"
+    assert "responseSchema" in dumped_config
+    assert dumped_config["thinkingConfig"]["thinkingLevel"] == "HIGH"
+    assert "tools" not in dumped_config
+    assert analysis.dossier.problem_title == "Two Sum"
     assert analysis.dossier.intended_solution.time_complexity == "O(n)"
-    assert len(analysis.sources) == 2
     assert len(analysis.hint_questions) == 5
 
 
 @pytest.mark.asyncio
-async def test_analysis_fails_closed_when_search_was_not_used():
-    client = FakeClient(response(grounded=False))
-    analyzer = GeminiProblemAnalyzer(api_key="test", client=client)
+async def test_plain_structured_response_without_candidates_or_grounding_succeeds():
+    response = response_with_text(dossier_json())
+    client = FakeClient(response)
 
-    with pytest.raises(ProblemAnalysisError, match="did not verify"):
+    analysis = await GeminiProblemAnalyzer(api_key="test", client=client).analyze(
+        problem_slug="two-sum",
+        problem_title="Two Sum",
+        problem_text="Find two indices whose values sum to target.",
+    )
+
+    assert not hasattr(response, "candidates")
+    assert analysis.hint_questions[0] == "What exactly must your result identify?"
+
+
+@pytest.mark.asyncio
+async def test_parsed_pydantic_response_succeeds():
+    dossier = ProblemDossier.model_validate_json(dossier_json())
+    client = FakeClient(SimpleNamespace(parsed=dossier, text=""))
+
+    analysis = await GeminiProblemAnalyzer(api_key="test", client=client).analyze(
+        problem_slug="two-sum",
+        problem_title="Two Sum",
+        problem_text="Find two indices whose values sum to target.",
+    )
+
+    assert analysis.dossier is dossier
+    assert len(client.models.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_raises_problem_analysis_error():
+    analyzer = GeminiProblemAnalyzer(api_key="test", client=FakeClient(response_with_text("not json")))
+
+    with pytest.raises(ProblemAnalysisError, match="invalid interviewer hint dossier"):
         await analyzer.analyze(
             problem_slug="two-sum",
             problem_title="Two Sum",
             problem_text="Find two indices whose values sum to target.",
         )
 
-    assert len(client.models.calls) == 1
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda payload: payload["hint_ladder"].__setitem__(1, {**payload["hint_ladder"][1], "order": 3}), "consecutive"),
+        (lambda payload: payload["hint_ladder"].__setitem__(0, {**payload["hint_ladder"][0], "socratic_question": "Not a question"}), "question"),
+        (lambda payload: payload["hint_ladder"].__setitem__(1, {**payload["hint_ladder"][1], "socratic_question": payload["hint_ladder"][0]["socratic_question"]}), "unique"),
+        (lambda payload: payload["interviewer_checkpoints"].__setitem__(0, {**payload["interviewer_checkpoints"][0], "neutral_follow_up_question": "Not a question"}), "follow-up"),
+    ],
+)
+async def test_dossier_validation_failures_raise_problem_analysis_error(mutation, message):
+    payload = _dossier_payload()
+    mutation(payload)
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=FakeClient(response_with_text(json.dumps(payload))),
+    )
+
+    del message
+    with pytest.raises(ProblemAnalysisError, match="invalid interviewer hint dossier"):
+        await analyzer.analyze(
+            problem_slug="two-sum",
+            problem_title="Two Sum",
+            problem_text="Find two indices whose values sum to target.",
+        )
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_dossier_is_accepted():
+    payload = _dossier_payload(confidence="low")
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=FakeClient(response_with_text(json.dumps(payload))),
+    )
+
+    analysis = await analyzer.analyze(
+        problem_slug="two-sum",
+        problem_title="Two Sum",
+        problem_text="The statement is incomplete but includes a target and input values.",
+    )
+
+    assert analysis.dossier.analysis_confidence == "low"
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_error_is_reported_without_billing_tier_claim():
+    class RateLimitError(Exception):
+        status_code = 429
+
+    class RateLimitedModels:
+        def generate_content(self, **kwargs):
+            del kwargs
+            raise RateLimitError("too many requests")
+
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=SimpleNamespace(models=RateLimitedModels()),
+    )
+
+    with pytest.raises(ProblemAnalysisError, match="rate limit or project quota") as error:
+        await analyzer.analyze(
+            problem_slug="two-sum",
+            problem_title="Two Sum",
+            problem_text="Find two indices whose values sum to target.",
+        )
+
+    assert "free-tier" not in str(error.value).lower()
+    assert "No Search" in str(error.value)

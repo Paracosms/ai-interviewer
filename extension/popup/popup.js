@@ -103,9 +103,9 @@
       ? formatElapsed(displayedElapsedSeconds())
       : "—";
     elements.hintStatus.textContent = hostStatus.problemAnalysisStatus === "pending"
-      ? "Preparing verified hints"
+      ? "Preparing interviewer hints"
       : (hostStatus.problemAnalysisStatus === "error"
-        ? "Verified hints unavailable"
+        ? "Interviewer hints unavailable"
         : (hostStatus.hintsEligible ? "Eligible" : "Locked"));
     elements.lastError.textContent = hostStatus.lastError || hostStatus.problemAnalysisError || "—";
     elements.volumeValue.textContent = `${elements.volume.value}%`;

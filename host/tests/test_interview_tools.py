@@ -1,10 +1,10 @@
 from interviewer.hint_gate import HintGate
 from interviewer.interview_tools import InterviewToolService, build_interview_tools
 from interviewer.problem_analysis import (
-    GroundedProblemAnalysis,
-    GroundedSource,
     IntendedSolution,
+    InterviewCheckpoint,
     InterviewHint,
+    ProblemAnalysis,
     ProblemAnalysisContext,
     ProblemDossier,
 )
@@ -26,13 +26,17 @@ def make_state(now=0):
 
 
 def ready_analysis_context():
-    analysis = GroundedProblemAnalysis(
+    analysis = ProblemAnalysis(
         dossier=ProblemDossier(
-            verified_problem_title="Two Sum",
-            problem_identity_matches=True,
-            verification_summary="Two grounded sources match the supplied problem statement.",
-            sources_agree=True,
-            source_consensus="Both grounded sources agree on the intended optimal solution.",
+            problem_title="Two Sum",
+            statement_summary="Find two distinct positions whose values add to the target.",
+            constraint_implications=[
+                "A linear scan is preferable for a large input.",
+                "The result must preserve the required index semantics.",
+            ],
+            analysis_confidence="high",
+            confidence_reason="The supplied statement and constraints are clear enough for analysis.",
+            assumptions=[],
             intended_solution=IntendedSolution(
                 algorithm="single-pass hash map",
                 summary="Store prior values and look up each required complement while scanning.",
@@ -41,7 +45,26 @@ def ready_analysis_context():
                 time_complexity="O(n)",
                 space_complexity="O(n)",
             ),
-            interviewer_checkpoints=["complement", "no reuse", "complexity"],
+            interviewer_checkpoints=[
+                InterviewCheckpoint(
+                    topic="complement relationship",
+                    evidence_of_understanding="The candidate explains how each value relates to the target.",
+                    concern_signals=["searches without connecting values to the target"],
+                    neutral_follow_up_question="How does the target affect the relationship between two values?",
+                ),
+                InterviewCheckpoint(
+                    topic="distinct positions",
+                    evidence_of_understanding="The candidate accounts for using two different positions.",
+                    concern_signals=["allows the current item to match itself"],
+                    neutral_follow_up_question="What does the requirement about the two positions imply?",
+                ),
+                InterviewCheckpoint(
+                    topic="complexity",
+                    evidence_of_understanding="The candidate relates repeated work to the input size.",
+                    concern_signals=["does not account for nested scans"],
+                    neutral_follow_up_question="How does your running time change as the input grows?",
+                ),
+            ],
             common_wrong_turns=["same element twice", "returns values"],
             hint_ladder=[
                 InterviewHint(
@@ -52,10 +75,6 @@ def ready_analysis_context():
                 )
                 for index in range(1, 6)
             ],
-        ),
-        sources=(
-            GroundedSource("LeetCode", "https://leetcode.com/two-sum"),
-            GroundedSource("Reference", "https://example.com/two-sum"),
         ),
     )
     context = ProblemAnalysisContext()
@@ -162,4 +181,24 @@ def test_pending_analysis_blocks_hint_without_consuming_cooldown() -> None:
 
     assert result["allowed"] is False
     assert result["problemAnalysis"]["status"] == "pending"
+    assert result["reason"] == "Interviewer hints are still being prepared."
     assert state.last_hint_at is None
+
+
+def test_failed_analysis_explains_that_interviewer_hints_are_unavailable() -> None:
+    state = make_state(now=0)
+    context = ProblemAnalysisContext()
+    context.mark_error("analysis failed")
+    service = InterviewToolService(
+        state,
+        HintGate(unlock_seconds=0, cooldown_seconds=30, stuck_code_seconds=0),
+        clock=lambda: 100,
+        problem_analysis=context,
+    )
+
+    result = service.request_micro_hint({"candidateExplicitlyRequestedHelp": True})
+
+    assert result["allowed"] is False
+    assert result["reason"] == (
+        "Interviewer hints are unavailable because background problem analysis failed."
+    )
