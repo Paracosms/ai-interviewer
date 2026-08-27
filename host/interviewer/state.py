@@ -33,6 +33,7 @@ class ProblemChangedError(StateError):
 
 class CodeUpdateResult(str, Enum):
     APPLIED = "applied"
+    RESYNCHRONIZED = "resynchronized"
     LANGUAGE_UPDATED = "language_updated"
     IGNORED_DUPLICATE = "ignored_duplicate"
     IGNORED_OLDER = "ignored_older"
@@ -49,6 +50,7 @@ class InterviewState:
     language: str | None = None
     code: str | None = None
     code_version: int = 0
+    code_source_id: str | None = None
     last_code_change_at: float | None = None
     last_hint_at: float | None = None
     gemini_connected: bool = False
@@ -74,6 +76,7 @@ class InterviewState:
         language: str,
         code: str,
         code_version: int,
+        code_source_id: str | None = None,
         now: float | None = None,
     ) -> None:
         if self.is_active:
@@ -89,6 +92,7 @@ class InterviewState:
         self.language = language
         self.code = code
         self.code_version = code_version
+        self.code_source_id = code_source_id
         self.last_code_change_at = timestamp
         self.last_hint_at = None
         self.gemini_connected = False
@@ -139,6 +143,7 @@ class InterviewState:
         language: str,
         code: str,
         code_version: int,
+        code_source_id: str | None = None,
         now: float | None = None,
     ) -> CodeUpdateResult:
         if self.problem_url is None:
@@ -149,11 +154,16 @@ class InterviewState:
             raise ProblemChangedError("The active LeetCode problem changed. Stop and restart the interview.")
         if code_version < 0:
             raise StateError("code_version must be nonnegative.")
-        if code_version < self.code_version:
+        source_changed = bool(
+            code_source_id
+            and self.code_source_id
+            and code_source_id != self.code_source_id
+        )
+        if code_version < self.code_version and not source_changed:
             return CodeUpdateResult.IGNORED_OLDER
 
         timestamp = time.monotonic() if now is None else float(now)
-        if code_version == self.code_version:
+        if code_version == self.code_version and not source_changed:
             if language != self.language:
                 self.language = language
                 return CodeUpdateResult.LANGUAGE_UPDATED
@@ -163,9 +173,11 @@ class InterviewState:
         self.language = language
         self.code = code
         self.code_version = code_version
+        if code_source_id:
+            self.code_source_id = code_source_id
         if code_changed:
             self.last_code_change_at = timestamp
-        return CodeUpdateResult.APPLIED
+        return CodeUpdateResult.RESYNCHRONIZED if source_changed else CodeUpdateResult.APPLIED
 
     def set_interaction_mode(self, mode: str | InteractionMode) -> InteractionMode:
         if not self.is_active:
@@ -187,6 +199,7 @@ class InterviewState:
         self.language = None
         self.code = None
         self.code_version = 0
+        self.code_source_id = None
         self.last_code_change_at = None
         self.last_hint_at = None
         self.gemini_connected = False

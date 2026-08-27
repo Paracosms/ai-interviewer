@@ -72,6 +72,24 @@ def test_older_code_version_is_ignored() -> None:
     assert state.code == "new code"
 
 
+def test_new_code_source_can_resynchronize_after_revision_reset() -> None:
+    state = make_state()
+    state.code_source_id = "old-background"
+    state.code_version = 700
+    result = state.update_code(
+        page_url=state.problem_url,
+        language="python3",
+        code="class Solution:\n    return 42",
+        code_version=1,
+        code_source_id="new-background",
+        now=140,
+    )
+    assert result is CodeUpdateResult.RESYNCHRONIZED
+    assert state.code_version == 1
+    assert state.code_source_id == "new-background"
+    assert "return 42" in state.code
+
+
 def test_language_update_is_accepted_without_code_change() -> None:
     state = make_state()
     result = state.update_code(

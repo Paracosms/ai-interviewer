@@ -223,3 +223,53 @@ test("page bridge reports an attached empty editor separately from its code", ()
   assert.equal(snapshot.editorDetected, true);
   assert.equal(snapshot.code, "");
 });
+
+test("page bridge keeps the attached editor when a hidden model changes", () => {
+  const messages = [];
+  let poll;
+  const visible = makeModel("class Solution: pass", "python", "visible", { attached: true });
+  const hidden = makeModel("hidden diagnostics", "python", "hidden");
+  const window = {
+    location: { href: "https://leetcode.com/problems/two-sum/", origin: "https://leetcode.com" },
+    postMessage(message) { messages.push(message); },
+    monaco: { editor: { getModels: () => [visible, hidden] } },
+  };
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "page_bridge.js"), "utf8");
+  vm.runInNewContext(source, {
+    window,
+    setInterval(callback) { poll = callback; return 1; },
+    console,
+  });
+
+  hidden.setValue("hidden diagnostics changed and became much longer than the editor");
+  poll();
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].payload.code, "class Solution: pass");
+});
+
+test("page bridge prefers the model owned by the visible Monaco editor", () => {
+  const messages = [];
+  const staleAttached = makeModel("stale attached code", "python", "stale", { attached: true });
+  const visible = makeModel("candidate implementation", "python", "visible", { attached: true });
+  const window = {
+    location: { href: "https://leetcode.com/problems/two-sum/", origin: "https://leetcode.com" },
+    postMessage(message) { messages.push(message); },
+    monaco: {
+      editor: {
+        getModels: () => [staleAttached, visible],
+        getEditors: () => [{
+          getModel: () => visible,
+          getDomNode: () => ({
+            isConnected: true,
+            getBoundingClientRect: () => ({ width: 800, height: 500 }),
+          }),
+        }],
+      },
+    },
+  };
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "page_bridge.js"), "utf8");
+  vm.runInNewContext(source, { window, setInterval() { return 1; }, console });
+
+  assert.equal(messages[0].payload.code, "candidate implementation");
+});

@@ -55,6 +55,8 @@ class SessionJsonLogger:
         self.path: Path | None = None
 
     def start(self, *, now: float | None = None) -> Path:
+        if self.path is not None:
+            return self.path
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%z")
         self.path = self.logs_dir / f"interview-{timestamp}-{uuid.uuid4().hex[:8]}.jsonl"

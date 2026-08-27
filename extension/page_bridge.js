@@ -32,8 +32,22 @@
       return null;
     }
     let models;
+    const visibleModels = new Set();
     try {
       models = monaco.editor.getModels();
+      const editors = monaco.editor.getEditors?.() || [];
+      for (const editor of editors) {
+        const node = editor.getDomNode?.();
+        const rect = node?.getBoundingClientRect?.();
+        if (
+          editor.getModel?.()
+          && node?.isConnected !== false
+          && rect?.width > 0
+          && rect?.height > 0
+        ) {
+          visibleModels.add(editor.getModel());
+        }
+      }
     } catch (_error) {
       return null;
     }
@@ -60,7 +74,15 @@
           previous.language !== language ||
           previous.version !== version
         );
-        return { model, code, language, version, attached, changed };
+        return {
+          model,
+          code,
+          language,
+          version,
+          attached,
+          changed,
+          visible: visibleModels.has(model),
+        };
       })
       .filter((candidate) => (
         candidate &&
@@ -82,16 +104,22 @@
     // follow whichever viable model is receiving edits.
     const byLength = (left, right) => right.code.length - left.code.length;
     const changedAttached = viable.filter((candidate) => candidate.changed && candidate.attached).sort(byLength);
+    const visible = viable.filter((candidate) => candidate.visible);
     const attached = viable.filter((candidate) => candidate.attached).sort(byLength);
     const attachedEmpty = attached.filter((candidate) => candidate.code.length === 0);
     const empty = viable.filter((candidate) => candidate.code.length === 0);
     const changed = viable.filter((candidate) => candidate.changed).sort(byLength);
     const previousSelection = viable.find((candidate) => candidate.model === selectedModel);
-    const selected = changedAttached[0]
-      || changed[0]
+    // Once an attached editor model has been selected, keep it until it is
+    // detached. Hidden Monaco models can receive background edits and must not
+    // steal selection from the editor the candidate is actually using.
+    const selected = visible[0]
       || (previousSelection?.attached ? previousSelection : null)
+      || changedAttached[0]
       || attachedEmpty[0]
       || attached[0]
+      || (previousSelection?.changed ? previousSelection : null)
+      || changed[0]
       || empty[0]
       || previousSelection
       || viable.sort(byLength)[0]
@@ -119,7 +147,7 @@
       return;
     }
     lastError = null;
-    const { code, language } = selected;
+    const { code, language, version } = selected;
     const now = Date.now();
     if (
       code === lastCode &&
@@ -134,6 +162,7 @@
     publish("CODE_SNAPSHOT", {
       code,
       language,
+      version,
       editorDetected: true,
     });
   }

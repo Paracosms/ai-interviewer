@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import time
 from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from pathlib import Path
@@ -19,7 +21,7 @@ from .logging_utils import SessionJsonLogger
 from .problem_analysis import GeminiProblemAnalyzer, ProblemAnalysisContext
 from .state import InteractionMode, InterviewState, InterviewStatus
 from .transcript_utils import TranscriptError, generate_transcript
-from .turn_taking import RESPONSE_HOLD_SECONDS, permits_quick_response
+from .turn_taking import RESPONSE_HOLD_SECONDS, permits_focus_response, permits_quick_response
 
 
 class GeminiSessionError(RuntimeError):
@@ -231,6 +233,10 @@ class GeminiLiveSession:
         self._focus_output_suppressed = False
         self._allowed_audio_seen = False
         self._expect_candidate_transcript = False
+        self._focus_audio_buffer = bytearray()
+        self._focus_output_text = ""
+        self._focus_audio_rejected = False
+        self._resumption_update_count = 0
 
     async def wait_ready(self, timeout: float = 20.0) -> None:
         await asyncio.wait_for(self.ready_event.wait(), timeout=timeout)
@@ -255,7 +261,7 @@ class GeminiLiveSession:
         self.logger.log("session_started", {"model": self.config.gemini_model})
         try:
             self.audio.start()
-            reconnect_attempt = 0
+            consecutive_failures = 0
             while not self.stop_event.is_set():
                 self._go_away_received = False
                 try:
@@ -274,33 +280,39 @@ class GeminiLiveSession:
                     message = classify_gemini_error(exc)
                     if self.stop_event.is_set():
                         break
-                    if not self._can_retry(message, reconnect_attempt):
+                    if not self._can_retry(message, consecutive_failures):
                         raise GeminiSessionError(message) from exc
                     self.logger.log(
                         "session_reconnect_attempt",
-                        {"attempt": reconnect_attempt + 1, "reason": message},
+                        {
+                            "attempt": consecutive_failures + 1,
+                            "reason": message,
+                            "planned": False,
+                        },
                     )
                     self._notify_reconnecting()
-                    await self._wait_before_reconnect(self._reconnect_delays[reconnect_attempt])
-                    reconnect_attempt += 1
+                    await self._wait_before_reconnect(
+                        self._reconnect_delays[consecutive_failures]
+                    )
+                    consecutive_failures += 1
                     continue
 
                 if self.stop_event.is_set():
                     break
-                if reconnect_attempt >= len(self._reconnect_delays):
-                    raise GeminiSessionError(
-                        "The Gemini Live session could not be resumed. The interview was stopped."
-                    )
+                # GoAway is the normal Live API connection rotation mechanism.
+                # A successful resumed connection resets the failure budget, and
+                # planned rotations are allowed for the lifetime of the interview.
+                consecutive_failures = 0
                 self.logger.log(
                     "session_reconnect_attempt",
                     {
-                        "attempt": reconnect_attempt + 1,
+                        "attempt": 1,
                         "reason": "GoAway received",
+                        "planned": True,
                     },
                 )
                 self._notify_reconnecting()
-                await self._wait_before_reconnect(self._reconnect_delays[reconnect_attempt])
-                reconnect_attempt += 1
+                await self._wait_before_reconnect(self._reconnect_delays[0])
         except asyncio.CancelledError:
             raise
         except AudioError as exc:
@@ -495,9 +507,11 @@ class GeminiLiveSession:
                 if mode == InteractionMode.FOCUS.value:
                     self._cancel_response_hold(clear_output=True, reason="focus_mode_entered")
                     self._focus_solicited_response = False
+                    self._reset_focus_turn_buffer()
                 else:
                     self._release_response_hold(reason="focus_mode_exited")
                     self._focus_solicited_response = True
+                    self._reset_focus_turn_buffer()
             self.logger.log(
                 "tool_response",
                 {
@@ -566,7 +580,9 @@ class GeminiLiveSession:
         # earlier fragment, even if the server has not sent interrupted yet.
         if self._audio_is_held():
             self._cancel_response_hold(clear_output=True, reason="candidate_resumed")
-        quick_response = permits_quick_response(text)
+        quick_response = (
+            permits_focus_response(text) if self._focus_active else permits_quick_response(text)
+        )
         self._expect_candidate_transcript = False
         if self._focus_active:
             self._focus_solicited_response = quick_response
@@ -578,6 +594,33 @@ class GeminiLiveSession:
 
     def _output_is_allowed(self) -> bool:
         return not self._focus_active or self._focus_solicited_response
+
+    @staticmethod
+    def _is_silence_marker(text: str) -> bool:
+        normalized = " ".join(str(text or "").strip().lower().split())
+        return normalized in {"(silence)", "[silence]", "silence", "(silent)", "[silent]"}
+
+    def _reset_focus_turn_buffer(self) -> None:
+        self._focus_audio_buffer.clear()
+        self._focus_output_text = ""
+        self._focus_audio_rejected = False
+
+    def _buffer_focus_audio(self, audio: bytes) -> None:
+        if not self._focus_audio_rejected:
+            self._focus_audio_buffer.extend(audio)
+
+    def _finish_focus_turn(self) -> None:
+        transcript_present = bool(self._focus_output_text.strip())
+        if self._focus_audio_buffer and transcript_present and not self._focus_audio_rejected:
+            self.audio.write_model_audio(bytes(self._focus_audio_buffer))
+            self._allowed_audio_seen = True
+        elif self._focus_audio_buffer and not self._focus_audio_rejected:
+            self._focus_output_suppressed = True
+            self.logger.log(
+                "focus_output_suppressed",
+                {"reason": "missing_output_transcript"},
+            )
+        self._reset_focus_turn_buffer()
 
     def _process_message(self, message: Any, *, tool_call_pending: bool = False) -> None:
         interrupted = False
@@ -591,7 +634,12 @@ class GeminiLiveSession:
         resumption = getattr(message, "session_resumption_update", None)
         if resumption is not None and resumption.new_handle and resumption.resumable:
             self._resumption_handle = resumption.new_handle
-            self.logger.log("session_resumption_updated", {"resumable": True})
+            self._resumption_update_count += 1
+            if self._resumption_update_count == 1 or self._resumption_update_count % 100 == 0:
+                self.logger.log(
+                    "session_resumption_updated",
+                    {"resumable": True, "updates": self._resumption_update_count},
+                )
 
         go_away = getattr(message, "go_away", None)
         if go_away is not None:
@@ -605,6 +653,7 @@ class GeminiLiveSession:
                 self._cancel_response_hold(clear_output=True, reason="model_interrupted")
                 self._allowed_audio_seen = False
                 self._focus_output_suppressed = False
+                self._reset_focus_turn_buffer()
                 self.logger.log("model_interrupted")
             if server_content.input_transcription and server_content.input_transcription.text:
                 input_text = server_content.input_transcription.text
@@ -614,10 +663,24 @@ class GeminiLiveSession:
                 )
                 self._handle_candidate_transcript(input_text)
             if server_content.output_transcription and server_content.output_transcription.text:
-                if self._output_is_allowed():
+                output_text = server_content.output_transcription.text
+                if self._focus_active and self._focus_solicited_response:
+                    self._focus_output_text += output_text
+                    if self._is_silence_marker(self._focus_output_text):
+                        self._focus_audio_rejected = True
+                        self._focus_audio_buffer.clear()
+                        if not self._focus_output_suppressed:
+                            self._focus_output_suppressed = True
+                            self.logger.log(
+                                "focus_output_suppressed",
+                                {"reason": "literal_silence_marker"},
+                            )
+                    elif not self._is_silence_marker(output_text):
+                        self.logger.log("output_transcript", {"text": output_text})
+                elif self._output_is_allowed():
                     self.logger.log(
                         "output_transcript",
-                        {"text": server_content.output_transcription.text},
+                        {"text": output_text},
                     )
                 elif not self._focus_output_suppressed:
                     self._focus_output_suppressed = True
@@ -629,7 +692,9 @@ class GeminiLiveSession:
                 self._expect_candidate_transcript = False
                 if not self._focus_active:
                     self._start_response_hold()
-            if self._output_is_allowed():
+            if self._focus_active and self._focus_solicited_response:
+                self._buffer_focus_audio(audio)
+            elif self._output_is_allowed():
                 self.audio.write_model_audio(audio)
                 self._allowed_audio_seen = True
             elif not self._focus_output_suppressed:
@@ -640,6 +705,8 @@ class GeminiLiveSession:
             and server_content.turn_complete
             and not interrupted
         ):
+            if self._focus_active and self._focus_solicited_response:
+                self._finish_focus_turn()
             if self._allowed_audio_seen:
                 self.audio.finish_model_turn()
             if self._allowed_audio_seen or self._focus_output_suppressed or not tool_call_pending:
@@ -671,6 +738,7 @@ class HostSessionManager:
         config: HostConfig,
         prompt_path: str | Path | None = None,
         problem_analyzer: Any | None = None,
+        analysis_timeout_seconds: float = 60.0,
     ) -> None:
         self.config = config
         self.prompt_path = Path(prompt_path) if prompt_path is not None else Path(__file__).resolve().parents[1] / "interviewer_prompt.txt"
@@ -688,6 +756,7 @@ class HostSessionManager:
         self.problem_analyzer = problem_analyzer or GeminiProblemAnalyzer(
             api_key=config.gemini_api_key
         )
+        self.analysis_timeout_seconds = float(analysis_timeout_seconds)
 
     async def start(self, payload: dict[str, Any], state: InterviewState) -> None:
         """Start a session task and wait until the first Live turn is ready."""
@@ -770,24 +839,63 @@ class HostSessionManager:
         state: InterviewState,
         context: ProblemAnalysisContext,
     ) -> None:
+        started_at = time.monotonic()
+        if self._logger is not None:
+            self._logger.log(
+                "problem_analysis_started",
+                {"model": "gemini-3.7-flash", "timeoutSeconds": self.analysis_timeout_seconds},
+            )
         try:
-            analysis = await self.problem_analyzer.analyze(
-                problem_slug=payload["problemSlug"],
-                problem_title=payload["problemTitle"],
-                problem_text=payload["problemText"],
+            analysis = await asyncio.wait_for(
+                self.problem_analyzer.analyze(
+                    problem_slug=payload["problemSlug"],
+                    problem_title=payload["problemTitle"],
+                    problem_text=payload["problemText"],
+                ),
+                timeout=self.analysis_timeout_seconds,
             )
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            message = (
+                f"Interviewer hint preparation timed out after "
+                f"{int(self.analysis_timeout_seconds)} seconds."
+            )
+            if self._analysis_context is context and state.is_active:
+                context.mark_error(message)
+                state.mark_problem_analysis_error(message)
+                if self._logger is not None:
+                    self._logger.log(
+                        "problem_analysis_failed",
+                        {
+                            "reason": "timeout",
+                            "durationSeconds": round(time.monotonic() - started_at, 3),
+                        },
+                    )
+            return
         except Exception as exc:  # noqa: BLE001 - analysis failure must not stop Live.
             if self._analysis_context is context and state.is_active:
                 message = str(exc) or "Gemini 3.7 Flash could not prepare the interviewer hint dossier."
                 context.mark_error(message)
                 state.mark_problem_analysis_error(message)
+                if self._logger is not None:
+                    self._logger.log(
+                        "problem_analysis_failed",
+                        {
+                            "reason": "request_error",
+                            "durationSeconds": round(time.monotonic() - started_at, 3),
+                        },
+                    )
             return
 
         if self._analysis_context is context and state.is_active:
             context.mark_ready(analysis)
             state.mark_problem_analysis_ready()
+            if self._logger is not None:
+                self._logger.log(
+                    "problem_analysis_ready",
+                    {"durationSeconds": round(time.monotonic() - started_at, 3)},
+                )
 
     async def _wait_until_ready(
         self,
@@ -824,15 +932,32 @@ class HostSessionManager:
         if state.status is InterviewStatus.RUNNING:
             state.mark_reconnecting()
 
-    def log_code_update(self, result: str, state: InterviewState) -> None:
+    def log_code_update(
+        self,
+        result: str,
+        state: InterviewState,
+        *,
+        incoming_code_version: int | None = None,
+        incoming_code_source_id: str | None = None,
+        incoming_code: str | None = None,
+    ) -> None:
         if self._logger is not None:
+            code_text = state.code if incoming_code is None else incoming_code
+            source_text = incoming_code_source_id or "legacy"
             self._logger.log(
                 "code_updated",
                 {
                     "result": result,
-                    "codeVersion": state.code_version,
+                    "incomingCodeVersion": incoming_code_version,
+                    "acceptedCodeVersion": state.code_version,
                     "language": state.language,
                     "codeCharacters": len(state.code or ""),
+                    "codeFingerprint": hashlib.sha256(
+                        (code_text or "").encode("utf-8")
+                    ).hexdigest()[:12],
+                    "sourceFingerprint": hashlib.sha256(
+                        source_text.encode("utf-8")
+                    ).hexdigest()[:12],
                 },
             )
 

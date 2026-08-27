@@ -132,3 +132,35 @@ test("HTTP status does not overwrite the interview status", async () => {
   assert.equal(response.httpStatus, 200);
   assert.equal(response.running, false);
 });
+
+test("background owns one serialized code revision stream per tab", async () => {
+  const bodies = [];
+  const background = loadBackground(async (_url, options = {}) => {
+    if (options.body) {
+      bodies.push(JSON.parse(options.body));
+    }
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { ok: true }; },
+    };
+  });
+  const base = {
+    protocolVersion: 1,
+    pageUrl: "https://leetcode.com/problems/two-sum/",
+    language: "python3",
+  };
+
+  await background.listener(
+    { type: "CODE_UPDATE", payload: { ...base, code: "pass", codeVersion: 700 } },
+    { tab: { id: 42 } },
+  );
+  await background.listener(
+    { type: "CODE_UPDATE", payload: { ...base, code: "return 42", codeVersion: 1 } },
+    { tab: { id: 42 } },
+  );
+
+  assert.deepEqual(bodies.map((body) => body.codeVersion), [1, 2]);
+  assert.equal(bodies[0].codeSourceId, bodies[1].codeSourceId);
+  assert.match(bodies[0].codeSourceId, /^background-/);
+});

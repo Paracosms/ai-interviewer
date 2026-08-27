@@ -16,6 +16,47 @@
   const REQUEST_TIMEOUT_MS = 2500;
   const START_INTERVIEW_TIMEOUT_MS = 30000;
   const STOP_INTERVIEW_TIMEOUT_MS = 7000;
+  const CODE_SOURCE_ID = `background-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const editorStates = new Map();
+  const codeUpdateQueues = new Map();
+
+  function canonicalCodePayload(payload, tabId) {
+    const key = Number.isInteger(tabId) ? tabId : "unknown";
+    const previous = editorStates.get(key);
+    const samePage = previous?.pageUrl === payload.pageUrl;
+    const changed = !samePage
+      || previous.code !== payload.code
+      || previous.language !== payload.language;
+    const revision = changed ? ((samePage ? previous?.revision : 0) || 0) + 1 : previous.revision;
+    const next = {
+      pageUrl: payload.pageUrl,
+      language: payload.language,
+      code: payload.code,
+      revision,
+    };
+    editorStates.set(key, next);
+    return {
+      ...payload,
+      codeVersion: revision,
+      codeSourceId: CODE_SOURCE_ID,
+    };
+  }
+
+  function queueCodeUpdate(tabId, payload) {
+    const key = Number.isInteger(tabId) ? tabId : "unknown";
+    const previous = codeUpdateQueues.get(key) || Promise.resolve();
+    const queued = previous
+      .catch(() => undefined)
+      .then(() => requestHost("/session/code", { method: "POST", body: payload }));
+    codeUpdateQueues.set(key, queued);
+    const cleanup = () => {
+      if (codeUpdateQueues.get(key) === queued) {
+        codeUpdateQueues.delete(key);
+      }
+    };
+    queued.then(cleanup, cleanup);
+    return queued;
+  }
 
   function parseHostPort(value) {
     const text = String(value ?? "").trim();
@@ -105,7 +146,7 @@
     }
   }
 
-  async function handleMessage(message) {
+  async function handleMessage(message, sender = {}) {
     const type = message?.type;
     if (type === "GET_HOST_PORT") {
       return { ok: true, port: await getHostPort() };
@@ -137,9 +178,10 @@
       return requestHost("/audio/volume", { method: "POST", body: { volume: message.volume } });
     }
     if (type === "START_INTERVIEW") {
+      const body = canonicalCodePayload(message.payload, message.tabId);
       return requestHost("/session/start", {
         method: "POST",
-        body: message.payload,
+        body,
         timeoutMs: START_INTERVIEW_TIMEOUT_MS,
       });
     }
@@ -151,7 +193,8 @@
       });
     }
     if (type === "CODE_UPDATE") {
-      return requestHost("/session/code", { method: "POST", body: message.payload });
+      const payload = canonicalCodePayload(message.payload, sender.tab?.id);
+      return queueCodeUpdate(sender.tab?.id, payload);
     }
     if (type === "SET_INTERACTION_MODE") {
       return requestHost("/session/mode", {
@@ -162,5 +205,5 @@
     return { ok: false, error: "Unknown extension message." };
   }
 
-  browser.runtime.onMessage.addListener((message) => handleMessage(message));
+  browser.runtime.onMessage.addListener((message, sender) => handleMessage(message, sender));
 })();

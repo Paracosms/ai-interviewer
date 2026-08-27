@@ -24,6 +24,27 @@ _HANDOFF_PHRASES = (
     "you can respond",
 )
 
+_FOCUS_DIRECT_PREFIXES = (
+    "interviewer",
+    "can you",
+    "could you",
+    "would you",
+    "will you",
+    "do you",
+    "what do you",
+    "how would you",
+    "can i assume",
+    "can i ask",
+    "could i assume",
+    "should i assume",
+    "may i assume",
+    "am i allowed",
+    "is it okay to assume",
+    "is it valid to assume",
+    "does the problem",
+    "what does the problem",
+)
+
 
 def permits_quick_response(text: str) -> bool:
     """Return true only for an explicit question or candidate handoff."""
@@ -37,3 +58,14 @@ def permits_quick_response(text: str) -> bool:
     if len(words) < 2:
         return False
     return normalized.endswith("?") or _QUESTION_START.match(normalized) is not None
+
+
+def permits_focus_response(text: str) -> bool:
+    """Require an explicit address or handoff while the candidate is focusing."""
+
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return False
+    if any(phrase in normalized for phrase in _HANDOFF_PHRASES):
+        return True
+    return any(normalized.startswith(prefix) for prefix in _FOCUS_DIRECT_PREFIXES)

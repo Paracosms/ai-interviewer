@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LeetCode AI Interviewer",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Connects a LeetCode problem and editor to a local AI interviewer host.",
   "browser_specific_settings": {
     "gecko": {

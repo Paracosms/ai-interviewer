@@ -266,6 +266,44 @@ async def test_problem_analysis_failure_does_not_stop_live_interview(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_problem_analysis_timeout_becomes_visible_error(tmp_path, monkeypatch):
+    FakeLiveSession.instances.clear()
+    monkeypatch.setattr(gemini_session, "GeminiLiveSession", FakeLiveSession)
+    analyzer = SlowProblemAnalyzer()
+    manager = HostSessionManager(
+        config=make_config(tmp_path),
+        prompt_path=tmp_path / "prompt.txt",
+        problem_analyzer=analyzer,
+        analysis_timeout_seconds=0.01,
+    )
+    (tmp_path / "prompt.txt").write_text("interviewer behavior", encoding="utf-8")
+    payload = start_payload()
+    state = InterviewState()
+    state.begin(
+        page_url=payload["pageUrl"],
+        problem_title=payload["problemTitle"],
+        language=payload["language"],
+        code=payload["code"],
+        code_version=payload["codeVersion"],
+    )
+
+    try:
+        await manager.start(payload, state)
+        for _ in range(100):
+            if state.problem_analysis_status == "error":
+                break
+            await asyncio.sleep(0.005)
+        assert state.problem_analysis_status == "error"
+        assert "timed out" in state.problem_analysis_error
+        log_text = manager._logger.path.read_text(encoding="utf-8")
+        assert '"event":"problem_analysis_started"' in log_text
+        assert '"event":"problem_analysis_failed"' in log_text
+        assert '"reason":"timeout"' in log_text
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
 async def test_http_manager_lifecycle_updates_authoritative_state(tmp_path, monkeypatch):
     FakeLiveSession.instances.clear()
     monkeypatch.setattr(gemini_session, "GeminiLiveSession", FakeLiveSession)

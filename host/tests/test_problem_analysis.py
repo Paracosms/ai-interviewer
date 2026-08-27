@@ -137,7 +137,8 @@ async def test_analysis_makes_one_tool_free_structured_request():
     dumped_config = call["config"].model_dump(exclude_none=True, by_alias=True)
     assert dumped_config["responseMimeType"] == "application/json"
     assert "responseSchema" in dumped_config
-    assert dumped_config["thinkingConfig"]["thinkingLevel"] == "HIGH"
+    assert dumped_config["thinkingConfig"]["thinkingLevel"] == "MEDIUM"
+    assert dumped_config["maxOutputTokens"] == 8192
     assert "tools" not in dumped_config
     assert analysis.dossier.problem_title == "Two Sum"
     assert analysis.dossier.intended_solution.time_complexity == "O(n)"

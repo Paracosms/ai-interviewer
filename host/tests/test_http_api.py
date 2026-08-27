@@ -40,8 +40,8 @@ class FakeController:
     async def stop(self):
         return None
 
-    def log_code_update(self, result, state):
-        pass
+    def log_code_update(self, result, state, **kwargs):
+        del result, state, kwargs
 
     def log_interaction_mode(self, source, state):
         pass
@@ -67,7 +67,7 @@ async def test_health_and_status_endpoints(tmp_path):
         assert await health.json() == {
             "ok": True,
             "protocolVersion": 1,
-            "hostVersion": "0.1.0",
+            "hostVersion": "0.1.1",
             "sessionStatus": "stopped",
             "port": 8765,
         }

@@ -244,6 +244,7 @@
     elements.start.disabled = true;
     const response = await browser.runtime.sendMessage({
       type: "START_INTERVIEW",
+      tabId: activeTabId,
       payload: {
         protocolVersion: 1,
         pageUrl: pageState.pageUrl,

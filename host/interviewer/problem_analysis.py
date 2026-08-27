@@ -226,19 +226,30 @@ class GeminiProblemAnalyzer:
             problem_title=problem_title,
             problem_text=problem_text,
         )
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=ProblemDossier,
+            thinking_config=types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel.MEDIUM
+            ),
+            max_output_tokens=8192,
+        )
         try:
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=PROBLEM_ANALYSIS_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=ProblemDossier,
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level=types.ThinkingLevel.HIGH
-                    ),
-                ),
-            )
+            async_models = getattr(getattr(self.client, "aio", None), "models", None)
+            if async_models is not None:
+                response = await async_models.generate_content(
+                    model=PROBLEM_ANALYSIS_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+            else:
+                # Test doubles and older SDK clients may expose only the sync API.
+                response = await asyncio.to_thread(
+                    self.client.models.generate_content,
+                    model=PROBLEM_ANALYSIS_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
         except Exception as exc:  # noqa: BLE001 - expose one clear startup failure.
             if _is_rate_limit_error(exc):
                 raise ProblemAnalysisError(

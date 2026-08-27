@@ -142,6 +142,15 @@ def _required_code_version(payload: Mapping[str, Any]) -> int:
     return value
 
 
+def _optional_code_source_id(payload: Mapping[str, Any]) -> str | None:
+    value = payload.get("codeSourceId")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value) > 200:
+        raise ApiError("codeSourceId must be a nonempty string of at most 200 characters.")
+    return value
+
+
 def validate_volume_payload(payload: Mapping[str, Any]) -> float:
     value = payload.get("volume")
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -175,6 +184,7 @@ def validate_start_payload(
         "language": _required_text(payload, "language"),
         "code": _bounded_text(payload, "code"),
         "codeVersion": _required_code_version(payload),
+        "codeSourceId": _optional_code_source_id(payload),
         "voice": voice,
     }
 
@@ -190,6 +200,7 @@ def validate_code_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "language": _required_text(payload, "language"),
         "code": _bounded_text(payload, "code"),
         "codeVersion": _required_code_version(payload),
+        "codeSourceId": _optional_code_source_id(payload),
     }
 
 
@@ -249,6 +260,7 @@ async def session_start(request: web.Request) -> web.Response:
         language=payload["language"],
         code=payload["code"],
         code_version=payload["codeVersion"],
+        code_source_id=payload["codeSourceId"],
     )
 
     try:
@@ -296,13 +308,20 @@ async def session_code(request: web.Request) -> web.Response:
             language=payload["language"],
             code=payload["code"],
             code_version=payload["codeVersion"],
+            code_source_id=payload["codeSourceId"],
         )
     except ProblemChangedError as exc:
         runtime.state.last_error = str(exc)
         return _json_response({"ok": False, "error": str(exc)}, status=409)
     except StateError as exc:
         return _json_response({"ok": False, "error": str(exc)}, status=409)
-    runtime.controller.log_code_update(result.value, runtime.state)
+    runtime.controller.log_code_update(
+        result.value,
+        runtime.state,
+        incoming_code_version=payload["codeVersion"],
+        incoming_code_source_id=payload["codeSourceId"],
+        incoming_code=payload["code"],
+    )
     return _json_response({"ok": True, "result": result.value})
 
 

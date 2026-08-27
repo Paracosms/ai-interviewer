@@ -288,11 +288,60 @@ def test_focus_mode_drops_unsolicited_output_but_allows_a_direct_question(tmp_pa
 
     live._process_message(types.LiveServerMessage(
         server_content=types.LiveServerContent(
-            input_transcription=types.Transcription(text="What does this constraint mean?")
+            input_transcription=types.Transcription(text="Can you explain this constraint?")
         )
     ))
     live._process_message(audio_message)
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            output_transcription=types.Transcription(text="The constraint means this."),
+            turn_complete=True,
+        )
+    ))
     assert len(audio.output_buffer) == 4
+
+
+def test_focus_mode_drops_self_talk_and_literal_silence_audio(tmp_path: Path) -> None:
+    state = make_running_state()
+    state.set_interaction_mode("focus")
+    audio = AudioIO()
+    live = GeminiLiveSession(
+        config=make_config(tmp_path),
+        audio=audio,
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=object(),
+        state=state,
+    )
+
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="How do we do that? Um")
+        )
+    ))
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            model_turn=types.Content(parts=[types.Part(
+                inline_data=types.Blob(data=b"nope", mime_type="audio/pcm;rate=24000")
+            )]),
+            turn_complete=True,
+        )
+    ))
+    assert len(audio.output_buffer) == 0
+
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="Can you respond?")
+        )
+    ))
+    live._process_message(type("AudioMessage", (), {"data": b"spoken-silence"})())
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            output_transcription=types.Transcription(text="(Silence)"),
+            turn_complete=True,
+        )
+    ))
+    assert len(audio.output_buffer) == 0
 
 
 def test_receiver_stays_connected_across_model_turns(tmp_path: Path) -> None:
@@ -420,7 +469,8 @@ class FakeSession:
         return None
 
     async def _messages(self):
-        if self.number < 3:
+        stop_after = getattr(self.owner, "_test_stop_after_connection", 3)
+        if self.number < stop_after:
             yield types.LiveServerMessage(
                 session_resumption_update=types.LiveServerSessionResumptionUpdate(
                     new_handle=f"resume-me-{self.number}", resumable=True
@@ -500,3 +550,23 @@ def test_go_away_reconnects_with_latest_handle(tmp_path: Path) -> None:
     assert transcripts[0].read_text(encoding="utf-8").startswith(
         f"This transcript is based off the log: {logger.path.name}\n"
     )
+
+
+def test_planned_go_away_rotations_do_not_exhaust_retry_budget(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    session = GeminiLiveSession(
+        config=config,
+        audio=FakeAudio(),
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=None,
+    )
+    session._test_stop_after_connection = 7
+    client = FakeClient(session)
+    session.client = client
+    session._reconnect_delays = (0.0, 0.0, 0.0)
+
+    asyncio.run(session.run())
+
+    assert len(client.calls) == 7
+    assert all(call[1].session_resumption.handle for call in client.calls[1:])
