@@ -134,3 +134,112 @@ def test_microphone_failure_is_actionable_and_does_not_leave_audio_running(monke
     with pytest.raises(AudioError, match="Could not open the configured microphone"):
         asyncio.run(start_audio())
     assert audio.running is False
+
+
+def test_default_playback_buffer_prebuffer_is_one_second() -> None:
+    audio = AudioIO()
+    assert audio.output_buffer.prebuffer_ms == 1000
+    assert audio.playback_stats == {
+        "prebufferMs": 1000,
+        "underrunCount": 0,
+        "maxBufferedMs": 0,
+    }
+
+
+def test_bursty_delivery_with_one_second_lead_prevents_mid_turn_empty_reads() -> None:
+    audio = AudioIO()
+    # 24,000 Hz, 16-bit mono -> 960 bytes per 20 ms callback
+    callback_bytes = 960
+    lead_bytes = 48_000  # 1,000 ms
+
+    audio.write_model_audio(b"A" * lead_bytes)
+    assert audio.output_buffer.max_buffered_ms == 1000
+
+    # Simulate 25 callbacks (500 ms) of consumption
+    for _ in range(25):
+        data = audio.output_buffer.read(callback_bytes)
+        assert len(data) == callback_bytes
+        assert data == b"A" * callback_bytes
+
+    # Delivery gap: now 500 ms buffered audio remains. Deliver another 500 ms burst
+    audio.write_model_audio(b"B" * 24_000)
+
+    # Simulate another 25 callbacks (500 ms)
+    for _ in range(25):
+        data = audio.output_buffer.read(callback_bytes)
+        assert len(data) == callback_bytes
+
+    # End of turn
+    audio.finish_model_turn()
+
+    # Drain the remaining 500 ms (25 callbacks)
+    for _ in range(25):
+        data = audio.output_buffer.read(callback_bytes)
+        assert len(data) == callback_bytes
+        assert data == b"B" * callback_bytes
+
+    assert len(audio.output_buffer) == 0
+    assert audio.playback_stats["underrunCount"] == 0
+
+
+def test_short_completed_turns_drain_below_one_second_threshold() -> None:
+    audio = AudioIO()
+    callback_bytes = 960
+    turn_bytes = 9_600  # 200 ms
+
+    audio.write_model_audio(b"S" * turn_bytes)
+    # Before turn complete, buffer does not start playing because it is below 1,000 ms
+    assert audio.output_buffer.read(callback_bytes) == b""
+
+    # Turn complete allows immediate draining
+    audio.finish_model_turn()
+
+    drained = bytearray()
+    for _ in range(10):
+        chunk = audio.output_buffer.read(callback_bytes)
+        drained.extend(chunk)
+
+    assert len(drained) == turn_bytes
+    assert drained == b"S" * turn_bytes
+    assert audio.output_buffer.read(callback_bytes) == b""
+    assert audio.playback_stats["underrunCount"] == 0
+    assert audio.playback_stats["maxBufferedMs"] == 200
+
+
+def test_underruns_increment_once_per_starvation_rebuffer_transition() -> None:
+    audio = AudioIO()
+    callback_bytes = 960
+    lead_bytes = 48_000  # 1,000 ms
+
+    # First turn starts and plays
+    audio.write_model_audio(b"1" * lead_bytes)
+    for _ in range(50):
+        assert len(audio.output_buffer.read(callback_bytes)) == callback_bytes
+
+    # Stream runs dry mid-turn (turn_complete not called) -> transition to rebuffering
+    assert audio.output_buffer.read(callback_bytes) == b""
+    assert audio.output_buffer.underrun_count == 1
+
+    # Subsequent reads while still starving should NOT increment underrun_count again
+    for _ in range(10):
+        assert audio.output_buffer.read(callback_bytes) == b""
+    assert audio.output_buffer.underrun_count == 1
+
+    # New audio arrives to satisfy prebuffering threshold -> resumes playing
+    audio.write_model_audio(b"2" * lead_bytes)
+    for _ in range(50):
+        assert len(audio.output_buffer.read(callback_bytes)) == callback_bytes
+
+    # Runs dry mid-turn again -> second underrun
+    assert audio.output_buffer.read(callback_bytes) == b""
+    assert audio.output_buffer.underrun_count == 2
+
+    # Verify stats contain strictly numeric fields and no audio content
+    stats = audio.playback_stats
+    assert stats == {
+        "prebufferMs": 1000,
+        "underrunCount": 2,
+        "maxBufferedMs": 1000,
+    }
+    for val in stats.values():
+        assert isinstance(val, int) and not isinstance(val, bool)

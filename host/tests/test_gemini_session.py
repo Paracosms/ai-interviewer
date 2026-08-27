@@ -301,7 +301,7 @@ def test_focus_mode_drops_unsolicited_output_but_allows_a_direct_question(tmp_pa
     assert len(audio.output_buffer) == 4
 
 
-def test_focus_mode_drops_self_talk_and_literal_silence_audio(tmp_path: Path) -> None:
+def test_permitted_focus_audio_streams_without_transcription_dependency(tmp_path: Path) -> None:
     state = make_running_state()
     state.set_interaction_mode("focus")
     audio = AudioIO()
@@ -314,6 +314,56 @@ def test_focus_mode_drops_self_talk_and_literal_silence_audio(tmp_path: Path) ->
         state=state,
     )
 
+    # 1. Permitted Focus audio plays when output transcription is completely ABSENT
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="Why does this test fail?")
+        )
+    ))
+    live._process_message(type("AudioMessage", (), {"data": b"direct-pcm"})())
+    assert len(audio.output_buffer) == len(b"direct-pcm")
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(turn_complete=True)
+    ))
+    assert len(audio.output_buffer) == len(b"direct-pcm")
+
+    # Clear for next scenario
+    audio.clear_output()
+
+    # 2. Permitted Focus audio plays when transcription arrives AFTER turn_complete
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="How should I handle empty arrays?")
+        )
+    ))
+    live._process_message(type("AudioMessage", (), {"data": b"early-audio"})())
+    assert len(audio.output_buffer) == len(b"early-audio")
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(turn_complete=True)
+    ))
+    # Late transcript arriving after turn_complete
+    live._process_message(types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            output_transcription=types.Transcription(text="Check array length first.")
+        )
+    ))
+    assert len(audio.output_buffer) == len(b"early-audio")
+
+
+def test_focus_mode_drops_self_talk_and_does_not_gate_on_silence_transcription(tmp_path: Path) -> None:
+    state = make_running_state()
+    state.set_interaction_mode("focus")
+    audio = AudioIO()
+    live = GeminiLiveSession(
+        config=make_config(tmp_path),
+        audio=audio,
+        system_instruction="test",
+        logger=SessionJsonLogger(tmp_path / "logs"),
+        client=object(),
+        state=state,
+    )
+
+    # Unfinished self-talk is rejected
     live._process_message(types.LiveServerMessage(
         server_content=types.LiveServerContent(
             input_transcription=types.Transcription(text="How do we do that? Um")
@@ -329,19 +379,20 @@ def test_focus_mode_drops_self_talk_and_literal_silence_audio(tmp_path: Path) ->
     ))
     assert len(audio.output_buffer) == 0
 
+    # Permitted question streams PCM directly without literal silence gating
     live._process_message(types.LiveServerMessage(
         server_content=types.LiveServerContent(
             input_transcription=types.Transcription(text="Can you respond?")
         )
     ))
-    live._process_message(type("AudioMessage", (), {"data": b"spoken-silence"})())
+    live._process_message(type("AudioMessage", (), {"data": b"spoken-pcm"})())
     live._process_message(types.LiveServerMessage(
         server_content=types.LiveServerContent(
             output_transcription=types.Transcription(text="(Silence)"),
             turn_complete=True,
         )
     ))
-    assert len(audio.output_buffer) == 0
+    assert len(audio.output_buffer) == len(b"spoken-pcm")
 
 
 def test_receiver_stays_connected_across_model_turns(tmp_path: Path) -> None:
@@ -419,6 +470,14 @@ class FakeAudio:
         self.stopped = False
         self.output_held = False
         self.suppressed_input_blocks = 0
+
+    @property
+    def playback_stats(self) -> dict[str, int]:
+        return {
+            "prebufferMs": 1000,
+            "underrunCount": 0,
+            "maxBufferedMs": 0,
+        }
 
     def start(self) -> None:
         self.started = True
@@ -570,3 +629,44 @@ def test_planned_go_away_rotations_do_not_exhaust_retry_budget(tmp_path: Path) -
 
     assert len(client.calls) == 7
     assert all(call[1].session_resumption.handle for call in client.calls[1:])
+
+
+def test_audio_playback_stats_logged_at_session_shutdown(tmp_path: Path) -> None:
+    import json
+
+    config = make_config(tmp_path)
+    audio = AudioIO()
+    audio.write_model_audio(b"A" * 48_000)
+    audio.output_buffer.read(960)
+
+    logger = SessionJsonLogger(tmp_path / "logs")
+    session = GeminiLiveSession(
+        config=config,
+        audio=audio,
+        system_instruction="test",
+        logger=logger,
+        client=None,
+    )
+    session._test_stop_after_connection = 1
+    client = FakeClient(session)
+    session.client = client
+    session._reconnect_delays = (0.0,)
+
+    asyncio.run(session.run())
+
+    lines = logger.path.read_text(encoding="utf-8").splitlines()
+    stats_events = [
+        json.loads(line)
+        for line in lines
+        if json.loads(line).get("event") == "audio_playback_stats"
+    ]
+    assert len(stats_events) == 1
+    payload = stats_events[0]["payload"]
+    assert payload == {
+        "prebufferMs": 1000,
+        "underrunCount": 0,
+        "maxBufferedMs": 1000,
+    }
+    # Verify purely numeric and no raw audio/transcription data
+    for val in payload.values():
+        assert isinstance(val, int) and not isinstance(val, bool)

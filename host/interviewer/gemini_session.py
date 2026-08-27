@@ -233,9 +233,6 @@ class GeminiLiveSession:
         self._focus_output_suppressed = False
         self._allowed_audio_seen = False
         self._expect_candidate_transcript = False
-        self._focus_audio_buffer = bytearray()
-        self._focus_output_text = ""
-        self._focus_audio_rejected = False
         self._resumption_update_count = 0
 
     async def wait_ready(self, timeout: float = 20.0) -> None:
@@ -336,6 +333,7 @@ class GeminiLiveSession:
                     "microphone_suppressed_for_playback",
                     {"blocks": suppressed_blocks},
                 )
+            self.logger.log("audio_playback_stats", self.audio.playback_stats)
             self.audio.stop()
             self._print_usage_summary()
             self.logger.log("session_stopped")
@@ -507,11 +505,9 @@ class GeminiLiveSession:
                 if mode == InteractionMode.FOCUS.value:
                     self._cancel_response_hold(clear_output=True, reason="focus_mode_entered")
                     self._focus_solicited_response = False
-                    self._reset_focus_turn_buffer()
                 else:
                     self._release_response_hold(reason="focus_mode_exited")
                     self._focus_solicited_response = True
-                    self._reset_focus_turn_buffer()
             self.logger.log(
                 "tool_response",
                 {
@@ -595,33 +591,6 @@ class GeminiLiveSession:
     def _output_is_allowed(self) -> bool:
         return not self._focus_active or self._focus_solicited_response
 
-    @staticmethod
-    def _is_silence_marker(text: str) -> bool:
-        normalized = " ".join(str(text or "").strip().lower().split())
-        return normalized in {"(silence)", "[silence]", "silence", "(silent)", "[silent]"}
-
-    def _reset_focus_turn_buffer(self) -> None:
-        self._focus_audio_buffer.clear()
-        self._focus_output_text = ""
-        self._focus_audio_rejected = False
-
-    def _buffer_focus_audio(self, audio: bytes) -> None:
-        if not self._focus_audio_rejected:
-            self._focus_audio_buffer.extend(audio)
-
-    def _finish_focus_turn(self) -> None:
-        transcript_present = bool(self._focus_output_text.strip())
-        if self._focus_audio_buffer and transcript_present and not self._focus_audio_rejected:
-            self.audio.write_model_audio(bytes(self._focus_audio_buffer))
-            self._allowed_audio_seen = True
-        elif self._focus_audio_buffer and not self._focus_audio_rejected:
-            self._focus_output_suppressed = True
-            self.logger.log(
-                "focus_output_suppressed",
-                {"reason": "missing_output_transcript"},
-            )
-        self._reset_focus_turn_buffer()
-
     def _process_message(self, message: Any, *, tool_call_pending: bool = False) -> None:
         interrupted = False
         usage = getattr(message, "usage_metadata", None)
@@ -653,7 +622,6 @@ class GeminiLiveSession:
                 self._cancel_response_hold(clear_output=True, reason="model_interrupted")
                 self._allowed_audio_seen = False
                 self._focus_output_suppressed = False
-                self._reset_focus_turn_buffer()
                 self.logger.log("model_interrupted")
             if server_content.input_transcription and server_content.input_transcription.text:
                 input_text = server_content.input_transcription.text
@@ -664,20 +632,7 @@ class GeminiLiveSession:
                 self._handle_candidate_transcript(input_text)
             if server_content.output_transcription and server_content.output_transcription.text:
                 output_text = server_content.output_transcription.text
-                if self._focus_active and self._focus_solicited_response:
-                    self._focus_output_text += output_text
-                    if self._is_silence_marker(self._focus_output_text):
-                        self._focus_audio_rejected = True
-                        self._focus_audio_buffer.clear()
-                        if not self._focus_output_suppressed:
-                            self._focus_output_suppressed = True
-                            self.logger.log(
-                                "focus_output_suppressed",
-                                {"reason": "literal_silence_marker"},
-                            )
-                    elif not self._is_silence_marker(output_text):
-                        self.logger.log("output_transcript", {"text": output_text})
-                elif self._output_is_allowed():
+                if self._output_is_allowed():
                     self.logger.log(
                         "output_transcript",
                         {"text": output_text},
@@ -692,9 +647,7 @@ class GeminiLiveSession:
                 self._expect_candidate_transcript = False
                 if not self._focus_active:
                     self._start_response_hold()
-            if self._focus_active and self._focus_solicited_response:
-                self._buffer_focus_audio(audio)
-            elif self._output_is_allowed():
+            if self._output_is_allowed():
                 self.audio.write_model_audio(audio)
                 self._allowed_audio_seen = True
             elif not self._focus_output_suppressed:
@@ -705,8 +658,6 @@ class GeminiLiveSession:
             and server_content.turn_complete
             and not interrupted
         ):
-            if self._focus_active and self._focus_solicited_response:
-                self._finish_focus_turn()
             if self._allowed_audio_seen:
                 self.audio.finish_model_turn()
             if self._allowed_audio_seen or self._focus_output_suppressed or not tool_call_pending:

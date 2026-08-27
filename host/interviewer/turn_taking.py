@@ -61,11 +61,17 @@ def permits_quick_response(text: str) -> bool:
 
 
 def permits_focus_response(text: str) -> bool:
-    """Require an explicit address or handoff while the candidate is focusing."""
+    """Require an explicit question, prefix, or handoff while focusing."""
 
     normalized = " ".join(str(text or "").strip().lower().split())
     if not normalized:
         return False
     if any(phrase in normalized for phrase in _HANDOFF_PHRASES):
         return True
-    return any(normalized.startswith(prefix) for prefix in _FOCUS_DIRECT_PREFIXES)
+    if any(normalized.startswith(prefix) for prefix in _FOCUS_DIRECT_PREFIXES):
+        return True
+    if normalized.endswith("?"):
+        words = normalized.rstrip("?.!").split()
+        if len(words) >= 2:
+            return True
+    return False

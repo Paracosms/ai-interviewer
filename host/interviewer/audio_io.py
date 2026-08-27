@@ -20,7 +20,7 @@ INPUT_BLOCK_MS = 80
 INPUT_BLOCK_FRAMES = INPUT_SAMPLE_RATE * INPUT_BLOCK_MS // 1_000
 OUTPUT_BLOCK_MS = 20
 OUTPUT_BLOCK_FRAMES = OUTPUT_SAMPLE_RATE * OUTPUT_BLOCK_MS // 1_000
-OUTPUT_PREBUFFER_MS = 120
+OUTPUT_PREBUFFER_MS = 1_000
 OUTPUT_PREBUFFER_BYTES = OUTPUT_SAMPLE_RATE * 2 * OUTPUT_PREBUFFER_MS // 1_000
 PLAYBACK_MICROPHONE_TAIL_SECONDS = 0.3
 
@@ -75,14 +75,44 @@ class PcmPlaybackBuffer:
         self,
         *,
         prebuffer_bytes: int = 0,
+        sample_rate: int = OUTPUT_SAMPLE_RATE,
     ) -> None:
+        self.sample_rate = max(1, int(sample_rate))
         self.prebuffer_bytes = max(0, int(prebuffer_bytes))
         self._chunks: deque[bytes] = deque()
         self._size = 0
+        self._max_size = 0
+        self._underrun_count = 0
         self._playing = self.prebuffer_bytes == 0
         self._turn_complete = False
         self._held = False
         self._lock = threading.Lock()
+
+    @property
+    def prebuffer_ms(self) -> int:
+        bytes_per_sec = self.sample_rate * 2
+        return self.prebuffer_bytes * 1000 // bytes_per_sec
+
+    @property
+    def max_buffered_ms(self) -> int:
+        with self._lock:
+            bytes_per_sec = self.sample_rate * 2
+            return self._max_size * 1000 // bytes_per_sec
+
+    @property
+    def underrun_count(self) -> int:
+        with self._lock:
+            return self._underrun_count
+
+    @property
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            bytes_per_sec = self.sample_rate * 2
+            return {
+                "prebufferMs": self.prebuffer_bytes * 1000 // bytes_per_sec,
+                "underrunCount": self._underrun_count,
+                "maxBufferedMs": self._max_size * 1000 // bytes_per_sec,
+            }
 
     def append(self, data: bytes) -> None:
         if not data:
@@ -91,6 +121,8 @@ class PcmPlaybackBuffer:
         with self._lock:
             self._chunks.append(chunk)
             self._size += len(chunk)
+            if self._size > self._max_size:
+                self._max_size = self._size
 
     def read(self, size: int) -> bytes:
         requested = max(0, int(size))
@@ -115,6 +147,7 @@ class PcmPlaybackBuffer:
                 and not self._turn_complete
             ):
                 self._playing = False
+                self._underrun_count += 1
                 return b""
 
             result = bytearray()
@@ -215,6 +248,10 @@ class AudioIO:
     @property
     def output_held(self) -> bool:
         return self.output_buffer.held
+
+    @property
+    def playback_stats(self) -> dict[str, int]:
+        return self.output_buffer.stats
 
     @property
     def suppressed_input_blocks(self) -> int:
