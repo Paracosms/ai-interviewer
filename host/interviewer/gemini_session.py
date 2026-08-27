@@ -18,7 +18,12 @@ from .config import HostConfig
 from .hint_gate import HintGate
 from .interview_tools import InterviewToolService, build_interview_tools
 from .logging_utils import SessionJsonLogger
-from .problem_analysis import GeminiProblemAnalyzer, ProblemAnalysisContext
+from .problem_analysis import (
+    PROBLEM_ANALYSIS_MODEL,
+    GeminiProblemAnalyzer,
+    ProblemAnalysisContext,
+    ProblemAnalysisError,
+)
 from .state import InteractionMode, InterviewState, InterviewStatus
 from .transcript_utils import TranscriptError, generate_transcript
 from .turn_taking import RESPONSE_HOLD_SECONDS, permits_focus_response, permits_quick_response
@@ -160,7 +165,7 @@ def build_live_config(
     system_instruction: str,
     resumption_handle: str | None = None,
     tools: list[types.Tool] | None = None,
-    thinking_level: str = "low",
+    thinking_level: str = "minimal",
 ) -> types.LiveConnectConfig:
     """Build the audio/VAD/long-session setup for google-genai 1.x."""
 
@@ -705,9 +710,14 @@ class HostSessionManager:
         self._logger: SessionJsonLogger | None = None
         self._volume = 1.0
         self.problem_analyzer = problem_analyzer or GeminiProblemAnalyzer(
-            api_key=config.gemini_api_key
+            api_key=config.gemini_api_key,
+            failure_observer=self._log_problem_analysis_attempt_failure,
         )
         self.analysis_timeout_seconds = float(analysis_timeout_seconds)
+
+    def _log_problem_analysis_attempt_failure(self, payload: Any) -> None:
+        if self._logger is not None:
+            self._logger.log("problem_analysis_attempt_failed", payload)
 
     async def start(self, payload: dict[str, Any], state: InterviewState) -> None:
         """Start a session task and wait until the first Live turn is ready."""
@@ -794,7 +804,7 @@ class HostSessionManager:
         if self._logger is not None:
             self._logger.log(
                 "problem_analysis_started",
-                {"model": "gemini-3.7-flash", "timeoutSeconds": self.analysis_timeout_seconds},
+                {"model": PROBLEM_ANALYSIS_MODEL, "timeoutSeconds": self.analysis_timeout_seconds},
             )
         try:
             analysis = await asyncio.wait_for(
@@ -808,6 +818,7 @@ class HostSessionManager:
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
+            attempt = max(1, int(getattr(self.problem_analyzer, "current_attempt", 1)))
             message = (
                 f"Interviewer hint preparation timed out after "
                 f"{int(self.analysis_timeout_seconds)} seconds."
@@ -820,6 +831,13 @@ class HostSessionManager:
                         "problem_analysis_failed",
                         {
                             "reason": "timeout",
+                            "operation": "generate_content",
+                            "model": PROBLEM_ANALYSIS_MODEL,
+                            "attempt": attempt,
+                            "exceptionType": "TimeoutError",
+                            "statusCode": None,
+                            "providerMessage": message,
+                            "elapsedSeconds": round(time.monotonic() - started_at, 3),
                             "durationSeconds": round(time.monotonic() - started_at, 3),
                         },
                     )
@@ -830,10 +848,24 @@ class HostSessionManager:
                 context.mark_error(message)
                 state.mark_problem_analysis_error(message)
                 if self._logger is not None:
+                    diagnostics = (
+                        exc.log_payload()
+                        if isinstance(exc, ProblemAnalysisError)
+                        else {
+                            "operation": "prepare_problem_analysis",
+                            "model": PROBLEM_ANALYSIS_MODEL,
+                            "attempt": 1,
+                            "exceptionType": type(exc).__name__,
+                            "statusCode": None,
+                            "providerMessage": "request failed",
+                            "elapsedSeconds": round(time.monotonic() - started_at, 3),
+                        }
+                    )
                     self._logger.log(
                         "problem_analysis_failed",
                         {
                             "reason": "request_error",
+                            **diagnostics,
                             "durationSeconds": round(time.monotonic() - started_at, 3),
                         },
                     )

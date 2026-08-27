@@ -15,6 +15,7 @@ DEFAULT_LOCAL_HOST = "127.0.0.1"
 DEFAULT_LOCAL_PORT = 8765
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview"
 DEFAULT_GEMINI_VOICE = "Kore"
+DEFAULT_GEMINI_THINKING_LEVEL = "minimal"
 SUPPORTED_GEMINI_VOICES = frozenset(
     {
         "Zephyr",
@@ -155,7 +156,12 @@ def load_config(
         raise ConfigurationError(f"LOG_LEVEL must be one of: {allowed}.")
 
     thinking_level = (
-        str(values.get("GEMINI_THINKING_LEVEL", "low") or "low").strip().lower()
+        str(
+            values.get("GEMINI_THINKING_LEVEL", DEFAULT_GEMINI_THINKING_LEVEL)
+            or DEFAULT_GEMINI_THINKING_LEVEL
+        )
+        .strip()
+        .lower()
     )
     if thinking_level not in VALID_THINKING_LEVELS:
         allowed = ", ".join(sorted(VALID_THINKING_LEVELS))

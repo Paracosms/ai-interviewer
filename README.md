@@ -47,7 +47,7 @@ Edit `host/.env` and add the key. The default configuration is:
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-3.1-flash-live-preview
 GEMINI_VOICE=Kore
-GEMINI_THINKING_LEVEL=low
+GEMINI_THINKING_LEVEL=minimal
 LOCAL_HOST=127.0.0.1
 LOCAL_PORT=8765
 AUDIO_INPUT_DEVICE=
@@ -80,7 +80,7 @@ Expected output reflects the actual configured port:
 LeetCode AI Interviewer host
 Listening on http://127.0.0.1:8765
 Model: gemini-3.1-flash-live-preview
-Thinking level: low
+Thinking level: minimal
 Audio input: Windows default
 Audio output: Windows default
 Status: ready

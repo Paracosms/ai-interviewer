@@ -261,6 +261,31 @@ async def test_problem_analysis_failure_does_not_stop_live_interview(tmp_path, m
             "get_current_interview_state", {}
         )
         assert tool_state["problemAnalysis"]["status"] == "error"
+        hint = await FakeLiveSession.instances[0].tool_handler(
+            "request_micro_hint", {"candidateExplicitlyRequestedHelp": True}
+        )
+        assert hint["allowed"] is False
+        assert "background problem analysis failed" in hint["reason"]
+        assert state.status.value == "running"
+        log_records = [
+            __import__("json").loads(line)
+            for line in manager._logger.path.read_text(encoding="utf-8").splitlines()
+        ]
+        failure = next(
+            record for record in log_records if record["event"] == "problem_analysis_failed"
+        )
+        expected_diagnostics = {
+            "operation": "prepare_problem_analysis",
+            "model": "gemini-3.7-flash",
+            "attempt": 1,
+            "exceptionType": "RuntimeError",
+            "statusCode": None,
+            "providerMessage": "request failed",
+        }
+        assert {
+            key: failure["payload"][key] for key in expected_diagnostics
+        } == expected_diagnostics
+        assert isinstance(failure["payload"]["elapsedSeconds"], float)
     finally:
         await manager.stop()
 

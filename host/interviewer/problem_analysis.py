@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence
 
 from google import genai
 from google.genai import types
@@ -13,11 +14,51 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 PROBLEM_ANALYSIS_MODEL = "gemini-3.7-flash"
+PROBLEM_ANALYSIS_MAX_ATTEMPTS = 3
+PROBLEM_ANALYSIS_RETRY_DELAYS = (1.0, 2.0)
+_TRANSIENT_SERVER_CODES = frozenset({500, 502, 503, 504})
+_TRANSIENT_PROVIDER_STATUSES = frozenset(
+    {"INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"}
+)
 AnalysisConfidence = Literal["high", "medium", "low"]
 
 
 class ProblemAnalysisError(RuntimeError):
     """Raised when a useful interviewer dossier cannot be prepared."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str = "generate_content",
+        model: str = PROBLEM_ANALYSIS_MODEL,
+        attempt: int = 1,
+        exception_type: str = "ProblemAnalysisError",
+        status_code: int | None = None,
+        provider_message: str = "request failed",
+        elapsed_seconds: float = 0.0,
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.model = model
+        self.attempt = attempt
+        self.exception_type = exception_type
+        self.status_code = status_code
+        self.provider_message = provider_message
+        self.elapsed_seconds = elapsed_seconds
+
+    def log_payload(self) -> dict[str, Any]:
+        """Return redacted diagnostic fields suitable for the session JSONL log."""
+
+        return {
+            "operation": self.operation,
+            "model": self.model,
+            "attempt": self.attempt,
+            "exceptionType": self.exception_type,
+            "statusCode": self.status_code,
+            "providerMessage": self.provider_message,
+            "elapsedSeconds": round(self.elapsed_seconds, 3),
+        }
 
 
 class IntendedSolution(BaseModel):
@@ -200,19 +241,87 @@ Problem title label: {problem_title}
 """
 
 
-def _is_rate_limit_error(error: BaseException) -> bool:
+def _numeric_status_code(error: BaseException) -> int | None:
     status_code = getattr(error, "status_code", None) or getattr(error, "code", None)
-    if status_code == 429 or str(status_code) == "429":
+    try:
+        return int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_rate_limit_error(error: BaseException) -> bool:
+    if _numeric_status_code(error) == 429:
         return True
     lowered = str(error).lower()
     return " 429" in lowered or "too many requests" in lowered or "resource_exhausted" in lowered
 
 
-class GeminiProblemAnalyzer:
-    """Make exactly one tool-free Gemini 3.7 Flash request per interview start."""
+def _is_transient_server_error(error: BaseException) -> bool:
+    if _numeric_status_code(error) in _TRANSIENT_SERVER_CODES:
+        return True
+    provider_status = str(getattr(error, "status", "") or "").upper()
+    if provider_status in _TRANSIENT_PROVIDER_STATUSES:
+        return True
+    lowered = str(error).lower()
+    return any(
+        marker in lowered
+        for marker in (
+            " 502",
+            " 503",
+            " 504",
+            "bad gateway",
+            "service unavailable",
+            "currently experiencing high demand",
+            "gateway timeout",
+        )
+    )
 
-    def __init__(self, *, api_key: str, client: Any | None = None) -> None:
-        self.client = client or genai.Client(api_key=api_key)
+
+def _redacted_provider_message(
+    error: BaseException,
+    *,
+    sensitive_values: Sequence[str],
+) -> str:
+    message = getattr(error, "message", None) or str(error).strip() or "request failed"
+    message = " ".join(str(message).split())
+    for sensitive_value in sorted(
+        (value for value in sensitive_values if value), key=len, reverse=True
+    ):
+        message = message.replace(sensitive_value, "[REDACTED]")
+    return message[:1_000]
+
+
+class GeminiProblemAnalyzer:
+    """Make bounded, tool-free Gemini 3.7 Flash requests per interview start."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        client: Any | None = None,
+        retry_delays: Sequence[float] = PROBLEM_ANALYSIS_RETRY_DELAYS,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        failure_observer: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> None:
+        self.client = client or genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
+        self._api_key_for_redaction = api_key
+        self.retry_delays = tuple(float(delay) for delay in retry_delays)
+        self.sleep = sleep
+        self.failure_observer = failure_observer
+        self.current_attempt = 0
+
+    def _report_attempt_failure(self, payload: Mapping[str, Any]) -> None:
+        if self.failure_observer is None:
+            return
+        try:
+            self.failure_observer(payload)
+        except Exception:  # noqa: BLE001 - diagnostics must not mask analysis errors.
+            pass
 
     async def analyze(
         self,
@@ -234,33 +343,79 @@ class GeminiProblemAnalyzer:
             ),
             max_output_tokens=8192,
         )
-        try:
-            async_models = getattr(getattr(self.client, "aio", None), "models", None)
-            if async_models is not None:
-                response = await async_models.generate_content(
-                    model=PROBLEM_ANALYSIS_MODEL,
-                    contents=prompt,
-                    config=config,
+        started_at = time.monotonic()
+        response: Any | None = None
+        max_attempts = min(PROBLEM_ANALYSIS_MAX_ATTEMPTS, len(self.retry_delays) + 1)
+        for attempt in range(1, max_attempts + 1):
+            self.current_attempt = attempt
+            try:
+                async_models = getattr(getattr(self.client, "aio", None), "models", None)
+                if async_models is not None:
+                    response = await async_models.generate_content(
+                        model=PROBLEM_ANALYSIS_MODEL,
+                        contents=prompt,
+                        config=config,
+                    )
+                else:
+                    # Test doubles and older SDK clients may expose only the sync API.
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=PROBLEM_ANALYSIS_MODEL,
+                        contents=prompt,
+                        config=config,
+                    )
+                break
+            except Exception as exc:  # noqa: BLE001 - expose one clear startup failure.
+                elapsed_seconds = time.monotonic() - started_at
+                status_code = _numeric_status_code(exc)
+                provider_message = _redacted_provider_message(
+                    exc,
+                    sensitive_values=(
+                        prompt,
+                        problem_text,
+                        problem_title,
+                        problem_slug,
+                        self._api_key_for_redaction,
+                    ),
                 )
-            else:
-                # Test doubles and older SDK clients may expose only the sync API.
-                response = await asyncio.to_thread(
-                    self.client.models.generate_content,
-                    model=PROBLEM_ANALYSIS_MODEL,
-                    contents=prompt,
-                    config=config,
-                )
-        except Exception as exc:  # noqa: BLE001 - expose one clear startup failure.
-            if _is_rate_limit_error(exc):
+                failure_details = {
+                    "operation": "generate_content",
+                    "model": PROBLEM_ANALYSIS_MODEL,
+                    "attempt": attempt,
+                    "exceptionType": type(exc).__name__,
+                    "statusCode": status_code,
+                    "providerMessage": provider_message,
+                    "elapsedSeconds": round(elapsed_seconds, 3),
+                }
+                self._report_attempt_failure(failure_details)
+                error_kwargs = {
+                    "attempt": attempt,
+                    "exception_type": type(exc).__name__,
+                    "status_code": status_code,
+                    "provider_message": provider_message,
+                    "elapsed_seconds": elapsed_seconds,
+                }
+                if _is_rate_limit_error(exc):
+                    raise ProblemAnalysisError(
+                        "Gemini 3.7 Flash rate limit or project quota was reached while preparing "
+                        "the interviewer hint dossier. No Search or other paid tool was used, and "
+                        "no paid fallback was attempted.",
+                        **error_kwargs,
+                    ) from exc
+                if _is_transient_server_error(exc) and attempt < max_attempts:
+                    await self.sleep(self.retry_delays[attempt - 1])
+                    continue
+                if _is_transient_server_error(exc):
+                    raise ProblemAnalysisError(
+                        "Gemini 3.7 Flash remained temporarily unavailable after "
+                        f"{attempt} attempts while preparing the interviewer hint dossier.",
+                        **error_kwargs,
+                    ) from exc
                 raise ProblemAnalysisError(
-                    "Gemini 3.7 Flash rate limit or project quota was reached while preparing "
-                    "the interviewer hint dossier. No Search or other paid tool was used, and "
-                    "no paid fallback was attempted."
+                    "Gemini 3.7 Flash could not prepare the interviewer hint dossier: "
+                    f"{provider_message}",
+                    **error_kwargs,
                 ) from exc
-            raise ProblemAnalysisError(
-                "Gemini 3.7 Flash could not prepare the interviewer hint dossier: "
-                f"{str(exc).strip() or 'request failed'}"
-            ) from exc
 
         try:
             parsed = getattr(response, "parsed", None)
@@ -271,6 +426,11 @@ class GeminiProblemAnalyzer:
             )
         except (AttributeError, TypeError, ValueError, ValidationError) as exc:
             raise ProblemAnalysisError(
-                "Gemini 3.7 Flash returned an invalid interviewer hint dossier."
+                "Gemini 3.7 Flash returned an invalid interviewer hint dossier.",
+                operation="parse_problem_dossier",
+                attempt=attempt,
+                exception_type=type(exc).__name__,
+                provider_message="Structured output did not match the ProblemDossier schema.",
+                elapsed_seconds=time.monotonic() - started_at,
             ) from exc
         return ProblemAnalysis(dossier=dossier)

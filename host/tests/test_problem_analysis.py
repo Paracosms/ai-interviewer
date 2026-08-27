@@ -115,6 +115,27 @@ class FakeClient:
         self.models = FakeModels(result)
 
 
+class ProviderError(Exception):
+    def __init__(self, status_code, message, *, status=None):
+        super().__init__(message)
+        self.code = status_code
+        self.status = status
+        self.message = message
+
+
+class SequencedModels:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
+        result = self.results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
 @pytest.mark.asyncio
 async def test_analysis_makes_one_tool_free_structured_request():
     client = FakeClient(response_with_text(dossier_json()))
@@ -188,6 +209,121 @@ async def test_invalid_json_raises_problem_analysis_error():
 
 
 @pytest.mark.asyncio
+async def test_transient_503_then_success_is_retried():
+    models = SequencedModels(
+        [
+            ProviderError(
+                503,
+                "This model is currently experiencing high demand.",
+                status="UNAVAILABLE",
+            ),
+            response_with_text(dossier_json()),
+        ]
+    )
+    failures = []
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=SimpleNamespace(models=models),
+        retry_delays=(0,),
+        failure_observer=failures.append,
+    )
+
+    analysis = await analyzer.analyze(
+        problem_slug="two-sum",
+        problem_title="Two Sum",
+        problem_text="Find two indices whose values sum to target.",
+    )
+
+    assert len(models.calls) == 2
+    assert analysis.dossier.problem_title == "Two Sum"
+    assert failures == [
+        {
+            "operation": "generate_content",
+            "model": PROBLEM_ANALYSIS_MODEL,
+            "attempt": 1,
+            "exceptionType": "ProviderError",
+            "statusCode": 503,
+            "providerMessage": "This model is currently experiencing high demand.",
+            "elapsedSeconds": failures[0]["elapsedSeconds"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_503_exhausts_bounded_attempts():
+    models = SequencedModels(
+        [ProviderError(503, "high demand", status="UNAVAILABLE") for _ in range(3)]
+    )
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=SimpleNamespace(models=models),
+        retry_delays=(0, 0),
+    )
+
+    with pytest.raises(ProblemAnalysisError, match="after 3 attempts") as error:
+        await analyzer.analyze(
+            problem_slug="two-sum",
+            problem_title="Two Sum",
+            problem_text="Find two indices whose values sum to target.",
+        )
+
+    assert len(models.calls) == 3
+    assert error.value.status_code == 503
+    assert error.value.attempt == 3
+
+
+@pytest.mark.asyncio
+async def test_429_is_reported_without_retry():
+    models = SequencedModels(
+        [
+            ProviderError(429, "too many requests", status="RESOURCE_EXHAUSTED"),
+            response_with_text(dossier_json()),
+        ]
+    )
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=SimpleNamespace(models=models),
+        retry_delays=(0, 0),
+    )
+
+    with pytest.raises(ProblemAnalysisError, match="rate limit or project quota") as error:
+        await analyzer.analyze(
+            problem_slug="two-sum",
+            problem_title="Two Sum",
+            problem_text="Find two indices whose values sum to target.",
+        )
+
+    assert len(models.calls) == 1
+    assert error.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_failure_diagnostics_redact_problem_text_and_api_key():
+    problem_text = "SENSITIVE PROBLEM STATEMENT"
+    models = SequencedModels(
+        [ProviderError(400, f"invalid input: {problem_text}; key=test-secret")]
+    )
+    failures = []
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test-secret",
+        client=SimpleNamespace(models=models),
+        retry_delays=(0, 0),
+        failure_observer=failures.append,
+    )
+
+    with pytest.raises(ProblemAnalysisError):
+        await analyzer.analyze(
+            problem_slug="sensitive-problem",
+            problem_title="Sensitive Problem",
+            problem_text=problem_text,
+        )
+
+    assert failures[0]["providerMessage"] == (
+        "invalid input: [REDACTED]; key=[REDACTED]"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -212,6 +348,29 @@ async def test_dossier_validation_failures_raise_problem_analysis_error(mutation
             problem_title="Two Sum",
             problem_text="Find two indices whose values sum to target.",
         )
+
+
+@pytest.mark.asyncio
+async def test_missing_required_field_is_schema_validation_failure():
+    payload = _dossier_payload()
+    del payload["intended_solution"]
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=FakeClient(response_with_text(json.dumps(payload))),
+    )
+
+    with pytest.raises(ProblemAnalysisError, match="invalid interviewer hint dossier") as error:
+        await analyzer.analyze(
+            problem_slug="two-sum",
+            problem_title="Two Sum",
+            problem_text="Find two indices whose values sum to target.",
+        )
+
+    assert error.value.operation == "parse_problem_dossier"
+    assert (
+        error.value.provider_message
+        == "Structured output did not match the ProblemDossier schema."
+    )
 
 
 @pytest.mark.asyncio
