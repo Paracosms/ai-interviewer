@@ -694,7 +694,6 @@ class HostSessionManager:
         config: HostConfig,
         prompt_path: str | Path | None = None,
         problem_analyzer: Any | None = None,
-        analysis_timeout_seconds: float = 60.0,
     ) -> None:
         self.config = config
         self.prompt_path = Path(prompt_path) if prompt_path is not None else Path(__file__).resolve().parents[1] / "interviewer_prompt.txt"
@@ -713,7 +712,6 @@ class HostSessionManager:
             api_key=config.gemini_api_key,
             failure_observer=self._log_problem_analysis_attempt_failure,
         )
-        self.analysis_timeout_seconds = float(analysis_timeout_seconds)
 
     def _log_problem_analysis_attempt_failure(self, payload: Any) -> None:
         if self._logger is not None:
@@ -804,44 +802,16 @@ class HostSessionManager:
         if self._logger is not None:
             self._logger.log(
                 "problem_analysis_started",
-                {"model": PROBLEM_ANALYSIS_MODEL, "timeoutSeconds": self.analysis_timeout_seconds},
+                {"model": PROBLEM_ANALYSIS_MODEL},
             )
         try:
-            analysis = await asyncio.wait_for(
-                self.problem_analyzer.analyze(
-                    problem_slug=payload["problemSlug"],
-                    problem_title=payload["problemTitle"],
-                    problem_text=payload["problemText"],
-                ),
-                timeout=self.analysis_timeout_seconds,
+            analysis = await self.problem_analyzer.analyze(
+                problem_slug=payload["problemSlug"],
+                problem_title=payload["problemTitle"],
+                problem_text=payload["problemText"],
             )
         except asyncio.CancelledError:
             raise
-        except asyncio.TimeoutError:
-            attempt = max(1, int(getattr(self.problem_analyzer, "current_attempt", 1)))
-            message = (
-                f"Interviewer hint preparation timed out after "
-                f"{int(self.analysis_timeout_seconds)} seconds."
-            )
-            if self._analysis_context is context and state.is_active:
-                context.mark_error(message)
-                state.mark_problem_analysis_error(message)
-                if self._logger is not None:
-                    self._logger.log(
-                        "problem_analysis_failed",
-                        {
-                            "reason": "timeout",
-                            "operation": "generate_content",
-                            "model": PROBLEM_ANALYSIS_MODEL,
-                            "attempt": attempt,
-                            "exceptionType": "TimeoutError",
-                            "statusCode": None,
-                            "providerMessage": message,
-                            "elapsedSeconds": round(time.monotonic() - started_at, 3),
-                            "durationSeconds": round(time.monotonic() - started_at, 3),
-                        },
-                    )
-            return
         except Exception as exc:  # noqa: BLE001 - analysis failure must not stop Live.
             if self._analysis_context is context and state.is_active:
                 message = str(exc) or "Gemini 3.7 Flash could not prepare the interviewer hint dossier."

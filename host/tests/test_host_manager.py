@@ -291,7 +291,7 @@ async def test_problem_analysis_failure_does_not_stop_live_interview(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_problem_analysis_timeout_becomes_visible_error(tmp_path, monkeypatch):
+async def test_slow_problem_analysis_runs_without_artificial_timeout(tmp_path, monkeypatch):
     FakeLiveSession.instances.clear()
     monkeypatch.setattr(gemini_session, "GeminiLiveSession", FakeLiveSession)
     analyzer = SlowProblemAnalyzer()
@@ -299,7 +299,6 @@ async def test_problem_analysis_timeout_becomes_visible_error(tmp_path, monkeypa
         config=make_config(tmp_path),
         prompt_path=tmp_path / "prompt.txt",
         problem_analyzer=analyzer,
-        analysis_timeout_seconds=0.01,
     )
     (tmp_path / "prompt.txt").write_text("interviewer behavior", encoding="utf-8")
     payload = start_payload()
@@ -314,16 +313,14 @@ async def test_problem_analysis_timeout_becomes_visible_error(tmp_path, monkeypa
 
     try:
         await manager.start(payload, state)
-        for _ in range(100):
-            if state.problem_analysis_status == "error":
+        await asyncio.wait_for(analyzer.started.wait(), timeout=1)
+        assert state.problem_analysis_status == "pending"
+        analyzer.release.set()
+        for _ in range(50):
+            if state.problem_analysis_status == "ready":
                 break
             await asyncio.sleep(0.005)
-        assert state.problem_analysis_status == "error"
-        assert "timed out" in state.problem_analysis_error
-        log_text = manager._logger.path.read_text(encoding="utf-8")
-        assert '"event":"problem_analysis_started"' in log_text
-        assert '"event":"problem_analysis_failed"' in log_text
-        assert '"reason":"timeout"' in log_text
+        assert state.problem_analysis_status == "ready"
     finally:
         await manager.stop()
 
