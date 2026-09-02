@@ -13,6 +13,28 @@
   let lastSnapshotAt = 0;
   let selectedModel = null;
   let modelSnapshots = new WeakMap();
+  let activeContentListener = null;
+  let activeListenedModel = null;
+
+  function ensureContentListener(model) {
+    if (model === activeListenedModel) {
+      return;
+    }
+    if (activeContentListener && typeof activeContentListener.dispose === "function") {
+      try {
+        activeContentListener.dispose();
+      } catch (_) {}
+    }
+    activeContentListener = null;
+    activeListenedModel = model;
+    if (model && typeof model.onDidChangeContent === "function") {
+      try {
+        activeContentListener = model.onDidChangeContent(() => {
+          publish("TYPING_ACTIVITY", {});
+        });
+      } catch (_) {}
+    }
+  }
 
   function publish(type, payload) {
     window.postMessage(
@@ -125,6 +147,7 @@
       || viable.sort(byLength)[0]
       || null;
     selectedModel = selected?.model || null;
+    ensureContentListener(selectedModel);
     return selected;
   }
 
@@ -136,10 +159,12 @@
       lastError = null;
       lastSnapshotAt = 0;
       selectedModel = null;
+      ensureContentListener(null);
       modelSnapshots = new WeakMap();
     }
     const selected = chooseModel();
     if (!selected) {
+      ensureContentListener(null);
       if (lastError !== EDITOR_NOT_DETECTED_MESSAGE) {
         lastError = EDITOR_NOT_DETECTED_MESSAGE;
         publish("DETECTION_ERROR", { message: lastError });

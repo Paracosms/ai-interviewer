@@ -73,7 +73,7 @@ def ready_analysis_context():
                     when_to_use=f"candidate is stuck at checkpoint {index}",
                     socratic_question=f"What prior information would help at checkpoint {index}?",
                 )
-                for index in range(1, 6)
+                for index in range(1, 4)
             ],
         ),
     )
@@ -103,6 +103,8 @@ def test_current_state_tool_returns_latest_code() -> None:
     assert result["codeVersion"] == 2
     assert result["secondsSinceCodeChange"] == 10
     assert result["interactionMode"] == "conversation"
+    assert result["interviewPhase"] == "implementation"
+    assert result["codeSyncStatus"] == "connected"
 
 
 def test_mode_tool_persists_focus_mode() -> None:
@@ -117,38 +119,44 @@ def test_mode_tool_persists_focus_mode() -> None:
 
 def test_hint_tool_enforces_unlock_and_cooldown() -> None:
     state = make_state(now=0)
-    gate = HintGate(unlock_seconds=120, cooldown_seconds=30, stuck_code_seconds=20)
-    current_time = [119]
+    gate = HintGate(warmup_seconds=240, cooldown_seconds=30, stuck_code_seconds=20)
+    current_time = [10]
     service = InterviewToolService(
         state,
         gate,
         clock=lambda: current_time[0],
         problem_analysis=ready_analysis_context(),
     )
-    denied = service.request_micro_hint(
-        {"candidateExplicitlyRequestedHelp": True, "reason": "help"}
-    )
-    assert denied["allowed"] is False
-
-    current_time[0] = 120
     allowed = service.request_micro_hint(
         {"candidateExplicitlyRequestedHelp": True, "reason": "help"}
     )
     assert allowed["allowed"] is True
+    assert allowed["hint"]["question"] == "What prior information would help at checkpoint 1?"
+    assert allowed["hint"]["levelName"] == "open_probe"
     assert allowed["precomputedHintCandidates"][0] == "What prior information would help at checkpoint 1?"
     assert allowed["problemAnalysis"]["status"] == "ready"
-    assert state.last_hint_at == 120
+    assert state.last_hint_at == 10
+    assert state.last_hint_level == 1
 
-    current_time[0] = 149
+    current_time[0] = 30
     cooldown = service.request_micro_hint(
         {"candidateExplicitlyRequestedHelp": True, "reason": "help"}
     )
     assert cooldown["allowed"] is False
+    assert "hint cooldown" in cooldown["reason"]
+
+    current_time[0] = 45
+    allowed2 = service.request_micro_hint(
+        {"candidateExplicitlyRequestedHelp": True, "reason": "help"}
+    )
+    assert allowed2["allowed"] is True
+    assert allowed2["hint"]["levelName"] == "test_case"
+    assert state.last_hint_level == 2
 
 
 def test_implicit_hint_requires_code_inactivity() -> None:
     state = make_state(now=0)
-    gate = HintGate(unlock_seconds=120, cooldown_seconds=30, stuck_code_seconds=20)
+    gate = HintGate(warmup_seconds=60, cooldown_seconds=30, stuck_code_seconds=20)
     current_time = [130]
     state.update_code(
         page_url=state.problem_url,
@@ -157,12 +165,23 @@ def test_implicit_hint_requires_code_inactivity() -> None:
         code_version=2,
         now=120,
     )
-    service = InterviewToolService(state, gate, clock=lambda: current_time[0])
-    recent = service.request_micro_hint({"candidateExplicitlyRequestedHelp": False})
+    service = InterviewToolService(
+        state,
+        gate,
+        clock=lambda: current_time[0],
+        problem_analysis=ready_analysis_context(),
+    )
+    recent = service.request_micro_hint({
+        "candidateExplicitlyRequestedHelp": False,
+        "candidateUnproductivelyLooping": True,
+    })
     assert recent["allowed"] is False
 
     current_time[0] = 150
-    idle = service.request_micro_hint({"candidateExplicitlyRequestedHelp": False})
+    idle = service.request_micro_hint({
+        "candidateExplicitlyRequestedHelp": False,
+        "candidateUnproductivelyLooping": True,
+    })
     assert idle["allowed"] is True
 
 

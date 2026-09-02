@@ -57,33 +57,21 @@ def _dossier_payload(*, confidence="high"):
         "hint_ladder": [
             {
                 "order": 1,
-                "diagnostic_target": "candidate's interpretation of the required output",
+                "diagnostic_target": "open_probe",
                 "when_to_use": "The candidate has not clearly restated what must be returned.",
                 "socratic_question": "What exactly must your result identify?",
             },
             {
                 "order": 2,
-                "diagnostic_target": "relationship required by the target",
+                "diagnostic_target": "test_case",
                 "when_to_use": "The candidate is searching without using the target relationship.",
                 "socratic_question": "What relationship would let one value complete another?",
             },
             {
                 "order": 3,
-                "diagnostic_target": "information retained from earlier positions",
+                "diagnostic_target": "architectural_nudge",
                 "when_to_use": "The candidate repeats work over values already considered.",
                 "socratic_question": "What information from earlier positions could you retain?",
-            },
-            {
-                "order": 4,
-                "diagnostic_target": "invariant over the retained information",
-                "when_to_use": "The candidate has chosen a representation but cannot explain what it means.",
-                "socratic_question": "What should be true about the information you have retained so far?",
-            },
-            {
-                "order": 5,
-                "diagnostic_target": "avoiding repeated work",
-                "when_to_use": "The candidate's approach still scans the earlier values repeatedly.",
-                "socratic_question": "How could each new value use the retained information without another full scan?",
             },
         ],
     }
@@ -163,7 +151,7 @@ async def test_analysis_makes_one_tool_free_structured_request():
     assert "tools" not in dumped_config
     assert analysis.dossier.problem_title == "Two Sum"
     assert analysis.dossier.intended_solution.time_complexity == "O(n)"
-    assert len(analysis.hint_questions) == 5
+    assert len(analysis.hint_questions) == 3
 
 
 @pytest.mark.asyncio
@@ -273,12 +261,33 @@ async def test_repeated_503_exhausts_bounded_attempts():
 
 
 @pytest.mark.asyncio
-async def test_429_is_reported_without_retry():
+async def test_429_is_retried_with_backoff():
     models = SequencedModels(
         [
             ProviderError(429, "too many requests", status="RESOURCE_EXHAUSTED"),
             response_with_text(dossier_json()),
         ]
+    )
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=SimpleNamespace(models=models),
+        retry_delays=(0, 0),
+    )
+
+    analysis = await analyzer.analyze(
+        problem_slug="two-sum",
+        problem_title="Two Sum",
+        problem_text="Find two indices whose values sum to target.",
+    )
+
+    assert len(models.calls) == 2
+    assert analysis.dossier.problem_title == "Two Sum"
+
+
+@pytest.mark.asyncio
+async def test_429_exhaustion_raises_problem_analysis_error():
+    models = SequencedModels(
+        [ProviderError(429, "too many requests", status="RESOURCE_EXHAUSTED") for _ in range(3)]
     )
     analyzer = GeminiProblemAnalyzer(
         api_key="test",
@@ -293,7 +302,7 @@ async def test_429_is_reported_without_retry():
             problem_text="Find two indices whose values sum to target.",
         )
 
-    assert len(models.calls) == 1
+    assert len(models.calls) == 3
     assert error.value.status_code == 429
 
 
@@ -403,6 +412,7 @@ async def test_rate_limit_error_is_reported_without_billing_tier_claim():
     analyzer = GeminiProblemAnalyzer(
         api_key="test",
         client=SimpleNamespace(models=RateLimitedModels()),
+        retry_delays=(0, 0),
     )
 
     with pytest.raises(ProblemAnalysisError, match="rate limit or project quota") as error:

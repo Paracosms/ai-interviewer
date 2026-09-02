@@ -273,3 +273,26 @@ test("page bridge prefers the model owned by the visible Monaco editor", () => {
 
   assert.equal(messages[0].payload.code, "candidate implementation");
 });
+
+test("page bridge publishes TYPING_ACTIVITY when Monaco model content changes", () => {
+  const messages = [];
+  let onDidChangeContentCb = null;
+  const model = makeModel("class Solution: pass", "python", "active", { attached: true });
+  model.onDidChangeContent = (cb) => {
+    onDidChangeContentCb = cb;
+    return { dispose: () => {} };
+  };
+  const window = {
+    location: { href: "https://leetcode.com/problems/two-sum/", origin: "https://leetcode.com" },
+    postMessage(message) { messages.push(message); },
+    monaco: { editor: { getModels: () => [model] } },
+  };
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "page_bridge.js"), "utf8");
+  vm.runInNewContext(source, { window, setInterval() { return 1; }, console });
+
+  assert.equal(typeof onDidChangeContentCb, "function");
+  onDidChangeContentCb();
+
+  const typingMessages = messages.filter((m) => m.type === "TYPING_ACTIVITY");
+  assert.equal(typingMessages.length, 1);
+});

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
@@ -216,6 +217,14 @@ def _runtime(request: web.Request) -> HostRuntime:
     return request.app[RUNTIME_KEY]
 
 
+def validate_activity_payload(payload: Mapping[str, Any]) -> str:
+    _require_protocol(payload)
+    activity = payload.get("activity")
+    if not isinstance(activity, str) or activity != "typing":
+        raise ApiError("activity must be 'typing'.")
+    return activity
+
+
 async def health(request: web.Request) -> web.Response:
     runtime = _runtime(request)
     status = runtime.state.status.value
@@ -250,10 +259,12 @@ async def session_start(request: web.Request) -> web.Response:
         return _json_response({"ok": False, "error": exc.message}, status=exc.status)
 
     if runtime.state.is_active:
-        return _json_response(
-            {"ok": False, "error": "An interview is already running."},
-            status=409,
-        )
+        runtime.state.mark_stopping()
+        try:
+            await runtime.controller.stop()
+        except Exception:  # noqa: BLE001 - cleanly stop previous session before starting new one
+            pass
+        runtime.state.stop()
     runtime.state.begin(
         page_url=payload["pageUrl"],
         problem_title=payload["problemTitle"],
@@ -312,6 +323,7 @@ async def session_code(request: web.Request) -> web.Response:
         )
     except ProblemChangedError as exc:
         runtime.state.last_error = str(exc)
+        runtime.state.mark_code_sync_disconnected()
         return _json_response({"ok": False, "error": str(exc)}, status=409)
     except StateError as exc:
         return _json_response({"ok": False, "error": str(exc)}, status=409)
@@ -323,6 +335,20 @@ async def session_code(request: web.Request) -> web.Response:
         incoming_code=payload["code"],
     )
     return _json_response({"ok": True, "result": result.value})
+
+
+async def session_activity(request: web.Request) -> web.Response:
+    runtime = _runtime(request)
+    try:
+        validate_activity_payload(await _read_json(request))
+    except ApiError as exc:
+        return _json_response({"ok": False, "error": exc.message}, status=exc.status)
+
+    if not runtime.state.is_active:
+        return _json_response({"ok": False, "error": "No interview is running."}, status=409)
+
+    runtime.state.mark_typing_activity(time.time())
+    return _json_response({"ok": True, "status": "accepted"})
 
 
 async def session_mode(request: web.Request) -> web.Response:
@@ -401,6 +427,7 @@ def create_app(
     app.router.add_post("/session/start", session_start)
     app.router.add_post("/session/code", session_code)
     app.router.add_post("/session/mode", session_mode)
+    app.router.add_post("/session/activity", session_activity)
     app.router.add_post("/session/stop", session_stop)
     app.router.add_get("/audio/volume", audio_volume)
     app.router.add_post("/audio/volume", audio_volume)

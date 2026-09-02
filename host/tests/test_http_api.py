@@ -133,7 +133,7 @@ async def test_extension_cors_preflight_is_allowed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_second_simultaneous_session_is_rejected(tmp_path):
+async def test_second_simultaneous_session_replaces_active_session(tmp_path):
     async def fake_starter(payload, state):
         return None
 
@@ -145,8 +145,28 @@ async def test_second_simultaneous_session_is_rejected(tmp_path):
         first = await client.post("/session/start", json=start_payload())
         second = await client.post("/session/start", json=start_payload(version=2))
         assert first.status == 200
-        assert second.status == 409
-        assert "already running" in (await second.json())["error"]
+        assert second.status == 200
+        assert (await second.json())["ok"] is True
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_activity_endpoint_marks_typing(tmp_path):
+    async def fake_starter(payload, state):
+        return None
+
+    app = make_app(make_config(tmp_path), fake_starter)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        await client.post("/session/start", json=start_payload())
+        response = await client.post(
+            "/session/activity",
+            json={"protocolVersion": 1, "activity": "typing"},
+        )
+        assert response.status == 200
+        assert (await response.json())["ok"] is True
     finally:
         await client.close()
 

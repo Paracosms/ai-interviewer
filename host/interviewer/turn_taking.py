@@ -13,6 +13,13 @@ _QUESTION_START = re.compile(
 _HANDOFF_PHRASES = (
     "i'm done",
     "i am done",
+    "i'm finished",
+    "i am finished",
+    "i think i am finished",
+    "i think i'm finished",
+    "i think that covers it",
+    "that covers it",
+    "ready to test",
     "that's my answer",
     "that is my answer",
     "go ahead",

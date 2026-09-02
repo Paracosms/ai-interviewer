@@ -202,6 +202,12 @@
         body: { protocolVersion: PROTOCOL_VERSION, mode: message.mode },
       });
     }
+    if (type === "TYPING_ACTIVITY") {
+      return requestHost("/session/activity", {
+        method: "POST",
+        body: { protocolVersion: PROTOCOL_VERSION, activity: "typing" },
+      });
+    }
     return { ok: false, error: "Unknown extension message." };
   }
 

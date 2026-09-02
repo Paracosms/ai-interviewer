@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 PROBLEM_ANALYSIS_MODEL = "gemini-3.7-flash"
-PROBLEM_ANALYSIS_MAX_ATTEMPTS = 3
-PROBLEM_ANALYSIS_RETRY_DELAYS = (1.0, 2.0)
+PROBLEM_ANALYSIS_MAX_ATTEMPTS = 4
+PROBLEM_ANALYSIS_RETRY_DELAYS = (30.0, 60.0, 180.0)
 _TRANSIENT_SERVER_CODES = frozenset({500, 502, 503, 504})
 _TRANSIENT_PROVIDER_STATUSES = frozenset(
     {"INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"}
@@ -75,7 +75,7 @@ class IntendedSolution(BaseModel):
 class InterviewHint(BaseModel):
     """A short, progressively more revealing Socratic interviewer question."""
 
-    order: int = Field(ge=1, le=8)
+    order: int = Field(ge=1, le=3)
     diagnostic_target: str = Field(min_length=5, max_length=300)
     when_to_use: str = Field(min_length=5, max_length=500)
     socratic_question: str = Field(min_length=5, max_length=300)
@@ -102,14 +102,14 @@ class ProblemDossier(BaseModel):
     intended_solution: IntendedSolution
     interviewer_checkpoints: list[InterviewCheckpoint] = Field(min_length=3, max_length=10)
     common_wrong_turns: list[str] = Field(min_length=2, max_length=12)
-    hint_ladder: list[InterviewHint] = Field(min_length=5, max_length=8)
+    hint_ladder: list[InterviewHint] = Field(min_length=3, max_length=3)
 
     @model_validator(mode="after")
     def validate_interviewer_guidance(self) -> "ProblemDossier":
-        expected = list(range(1, len(self.hint_ladder) + 1))
+        expected = [1, 2, 3]
         actual = [hint.order for hint in self.hint_ladder]
         if actual != expected:
-            raise ValueError("hint ladder orders must be consecutive and start at 1")
+            raise ValueError("hint ladder orders must be exactly [1, 2, 3]")
 
         normalized_questions = [
             hint.socratic_question.strip().casefold() for hint in self.hint_ladder
@@ -215,17 +215,14 @@ constraints. Keep the final output concise and useful to a technical interviewer
 pseudocode, chain-of-thought, or a long internal derivation in the dossier.
 
 Hint ladder requirements:
-- Provide 5 to 8 distinct hints ordered from least revealing to most revealing.
-- Every hint must be exactly one short Socratic question and must include a useful when_to_use condition.
-- Each hint must target a specific diagnostic issue and be appropriate for an interviewer rather than a tutor.
-- Do not use code or pseudocode, state the solution, provide a solution-revealing test case, or tell the
-  candidate exactly which line, condition, or variable is wrong.
+- Provide exactly 3 distinct hints ordered from least revealing to most revealing:
+  1. order=1 (open_probe): Open-ended probe of candidate's approach, relationship, or model.
+  2. order=2 (test_case): Trace one concrete, non-solution-revealing test input.
+  3. order=3 (architectural_nudge): Nudge toward the relevant invariant or representation without naming algorithms.
+- Every hint must be exactly one short Socratic question ending with '?' and must include a useful when_to_use condition.
+- Do not use code or pseudocode, state the solution, or tell the candidate exactly which variable or line is wrong.
 - Do not name an algorithm or data structure that the candidate has not introduced.
 - Ground each hint in the supplied statement, constraints, intended invariant, or a common wrong turn.
-- Each hint must reveal strictly more direction than the preceding hint without becoming an answer.
-- The progression should generally clarify the candidate's model, direct attention to an important
-  relationship or constraint, probe retained or updated information, probe the invariant or representation,
-  probe how repeated work could be avoided, and narrow toward the intended operation or complexity.
 
 Interviewer checkpoint requirements:
 - Explain the topic being evaluated and evidence that would demonstrate understanding.
@@ -395,16 +392,16 @@ class GeminiProblemAnalyzer:
                     "provider_message": provider_message,
                     "elapsed_seconds": elapsed_seconds,
                 }
-                if _is_rate_limit_error(exc):
-                    raise ProblemAnalysisError(
-                        "Gemini 3.7 Flash rate limit or project quota was reached while preparing "
-                        "the interviewer hint dossier. No Search or other paid tool was used, and "
-                        "no paid fallback was attempted.",
-                        **error_kwargs,
-                    ) from exc
-                if _is_transient_server_error(exc) and attempt < max_attempts:
+                if (_is_rate_limit_error(exc) or _is_transient_server_error(exc)) and attempt < max_attempts:
                     await self.sleep(self.retry_delays[attempt - 1])
                     continue
+                if _is_rate_limit_error(exc):
+                    raise ProblemAnalysisError(
+                        "Gemini 3.7 Flash rate limit or project quota was reached after "
+                        f"{attempt} attempts while preparing the interviewer hint dossier. "
+                        "No Search or other paid tool was used, and no paid fallback was attempted.",
+                        **error_kwargs,
+                    ) from exc
                 if _is_transient_server_error(exc):
                     raise ProblemAnalysisError(
                         "Gemini 3.7 Flash remained temporarily unavailable after "

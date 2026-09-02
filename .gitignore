@@ -11,3 +11,4 @@ __pycache__/
 host/.venv/
 extension/dist/
 *.xpi
+test_tmp/

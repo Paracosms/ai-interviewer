@@ -35,6 +35,19 @@
   let codeDebounceTimer = null;
   let latestPageState = null;
   let lastProblemSignature = "";
+  let lastTypingSentAt = 0;
+  let codeSyncPaused = false;
+
+  function handleTypingActivity() {
+    const now = Date.now();
+    if (now - lastTypingSentAt >= 500) {
+      lastTypingSentAt = now;
+      browser.runtime.sendMessage({
+        type: "TYPING_ACTIVITY",
+        payload: { protocolVersion: PROTOCOL_VERSION, activity: "typing" },
+      }).catch(() => {});
+    }
+  }
 
   function normalizeText(value) {
     return String(value || "")
@@ -155,6 +168,9 @@
   }
 
   function sendCurrentCodeUpdate() {
+    if (codeSyncPaused) {
+      return Promise.resolve({ ok: false, error: "Code synchronization paused." });
+    }
     if (
       !latestEditorDetected ||
       latestCode === null ||
@@ -174,6 +190,11 @@
         code: latestCode,
         codeVersion: latestCodeVersion,
       },
+    }).then((response) => {
+      if (response && response.httpStatus === 409) {
+        codeSyncPaused = true;
+      }
+      return response;
     });
   }
 
@@ -196,6 +217,10 @@
       return;
     }
     checkNavigation();
+    if (message.type === "TYPING_ACTIVITY") {
+      handleTypingActivity();
+      return;
+    }
     if (message.type === "DETECTION_ERROR") {
       if (typeof message.payload.message !== "string") {
         return;
@@ -234,6 +259,7 @@
       clearTimeout(codeDebounceTimer);
       codeDebounceTimer = null;
     }
+    codeSyncPaused = false;
     pageUrl = window.location.href;
     latestEditorDetected = false;
     latestCode = null;

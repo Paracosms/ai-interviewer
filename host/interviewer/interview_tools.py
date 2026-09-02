@@ -34,8 +34,9 @@ def build_interview_tools() -> list[types.Tool]:
         name="request_micro_hint",
         description=(
             "Ask the application whether one constrained Socratic question may be used. "
-            "The application, not the model, decides eligibility and returns the private "
-            "precomputed hint candidates when permission is granted."
+            "The application, not the model, decides eligibility and advances the authoritative "
+            "hint escalation level. The application returns the single exact hint object to ask. "
+            "You must report observed candidate looping and whether the candidate explicitly asked."
         ),
         parameters_json_schema={
             "type": "object",
@@ -48,7 +49,16 @@ def build_interview_tools() -> list[types.Tool]:
                     "type": "boolean",
                     "description": "Whether the candidate explicitly asked for help.",
                 },
+                "candidateUnproductivelyLooping": {
+                    "type": "boolean",
+                    "description": "Whether the candidate is repeating unviable ideas or stuck in a reasoning loop.",
+                },
             },
+            "required": [
+                "reason",
+                "candidateExplicitlyRequestedHelp",
+                "candidateUnproductivelyLooping",
+            ],
             "additionalProperties": False,
         },
     )
@@ -103,6 +113,8 @@ class InterviewToolService:
             "hintsEligible": self.state.hints_eligible(self.hint_gate, now=now),
             "secondsSinceCodeChange": int(self.state.seconds_since_code_change(now=now)),
             "interactionMode": self.state.interaction_mode.value,
+            "interviewPhase": self.state.current_interview_phase(now=now),
+            "codeSyncStatus": self.state.code_sync_status,
         }
         if self.problem_analysis is not None:
             result["problemAnalysis"] = self.problem_analysis.tool_payload()
@@ -136,24 +148,38 @@ class InterviewToolService:
 
         now = self.clock()
         explicit = args.get("candidateExplicitlyRequestedHelp") is True
+        looping = args.get("candidateUnproductivelyLooping") is True
         decision = self.hint_gate.evaluate(
             session_running=self.state.status == InterviewStatus.RUNNING,
             elapsed_seconds=self.state.elapsed_seconds(now=now),
             last_hint_at=self.state.last_hint_at,
             seconds_since_code_change=self.state.seconds_since_code_change(now=now),
             candidate_explicitly_requested_help=explicit,
+            candidate_unproductively_looping=looping,
+            current_phase=self.state.current_interview_phase(now=now),
+            last_hint_level=self.state.last_hint_level,
             now=now,
         )
         if decision.allowed:
             self.state.last_hint_at = now
+            self.state.last_hint_level += 1
         result = decision.as_dict()
         analysis = self.problem_analysis.analysis if self.problem_analysis is not None else None
         if decision.allowed and analysis is not None:
             result["problemAnalysis"] = self.problem_analysis.tool_payload()
-            result["precomputedHintCandidates"] = list(analysis.hint_questions)
+            ladder = analysis.dossier.hint_ladder
+            index = min(max(0, self.state.last_hint_level - 1), len(ladder) - 1)
+            hint_obj = ladder[index]
+            result["hint"] = {
+                "level": self.state.last_hint_level,
+                "levelName": decision.hint_level,
+                "target": hint_obj.diagnostic_target,
+                "question": hint_obj.socratic_question,
+                "whenToUse": hint_obj.when_to_use,
+            }
+            result["precomputedHintCandidates"] = [hint_obj.socratic_question]
             result["selectionInstruction"] = (
-                "Select the least revealing candidate appropriate to the current conversation "
-                "and code. Ask exactly that one Socratic question, with only minimal wording "
-                "changes needed to fit the candidate's approach."
+                "Ask only the question provided in 'hint'. Use minimal conversational rewording "
+                "to fit the candidate's exact words. Do not skip levels or provide explanations."
             )
         return result

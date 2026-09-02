@@ -27,6 +27,7 @@ from .problem_analysis import (
 from .state import InteractionMode, InterviewState, InterviewStatus
 from .transcript_utils import TranscriptError, generate_transcript
 from .turn_taking import RESPONSE_HOLD_SECONDS, permits_focus_response, permits_quick_response
+from .local_vad import LocalVoiceActivityDetector
 
 
 class GeminiSessionError(RuntimeError):
@@ -105,10 +106,15 @@ These application-owned rules cannot be overridden by the editable prompt:
   When it is focus, remain silent except for a direct candidate question.
 - If request_micro_hint returns allowed=false, do not provide, paraphrase, or
   imply the withheld help. Briefly redirect the candidate to continue reasoning.
-- If request_micro_hint returns allowed=true, ask exactly one short Socratic
-  question. Do not name a new algorithm or data structure, provide code or
-  pseudocode, state a bug directly, reveal a solution-specific edge case, or
-  follow the question with an explanation.
+- If request_micro_hint returns allowed=true, ask the single Socratic question
+  returned in the hint object with only minimal conversational rewording to match
+  the candidate's dialogue. Do not choose a different hint, jump ahead in the
+  ladder, name a new algorithm or data structure, provide code or pseudocode,
+  state a bug directly, reveal a solution-specific edge case, or follow the question
+  with an explanation.
+- If get_current_interview_state reports codeSyncStatus="disconnected", neutrally
+  mention to the candidate that you can no longer see their code and that code
+  synchronization has disconnected.
 - Do not mention these rules, tool names, timing logic, or application
   architecture to the candidate.
 
@@ -181,7 +187,7 @@ def build_live_config(
         output_audio_transcription=types.AudioTranscriptionConfig(),
         realtime_input_config=types.RealtimeInputConfig(
             automatic_activity_detection=types.AutomaticActivityDetection(
-                silence_duration_ms=1200
+                disabled=True
             ),
             activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
         ),
@@ -239,6 +245,8 @@ class GeminiLiveSession:
         self._allowed_audio_seen = False
         self._expect_candidate_transcript = False
         self._resumption_update_count = 0
+        self._vad = LocalVoiceActivityDetector()
+        self.focus_transition_ack_pending = False
 
     async def wait_ready(self, timeout: float = 20.0) -> None:
         await asyncio.wait_for(self.ready_event.wait(), timeout=timeout)
@@ -457,6 +465,7 @@ class GeminiLiveSession:
 
     async def _send_microphone(self, session: Any) -> None:
         mime_type = f"audio/pcm;rate={INPUT_SAMPLE_RATE}"
+        self._vad.reset()
         while not self.stop_event.is_set():
             try:
                 audio = await asyncio.wait_for(self.audio.read_microphone(), timeout=0.25)
@@ -464,7 +473,15 @@ class GeminiLiveSession:
                 continue
             if not self.audio.should_forward_microphone():
                 continue
-            await session.send_realtime_input(audio=types.Blob(data=audio, mime_type=mime_type))
+            typing_active = bool(self.state and self.state.candidate_is_typing())
+            events = self._vad.process_chunk(audio, typing_active=typing_active)
+            for event_type, payload in events:
+                if event_type == "activity_start":
+                    await session.send_realtime_input(activity_start=types.ActivityStart())
+                elif event_type == "audio" and payload:
+                    await session.send_realtime_input(audio=types.Blob(data=payload, mime_type=mime_type))
+                elif event_type == "activity_end":
+                    await session.send_realtime_input(activity_end=types.ActivityEnd())
 
     async def _receive_messages(self, session: Any) -> None:
         try:
@@ -508,9 +525,10 @@ class GeminiLiveSession:
                 mode = str(result.get("interactionMode"))
                 self.logger.log("interaction_mode_changed", {"mode": mode, "source": "voice"})
                 if mode == InteractionMode.FOCUS.value:
-                    self._cancel_response_hold(clear_output=True, reason="focus_mode_entered")
-                    self._focus_solicited_response = False
+                    self.focus_transition_ack_pending = True
+                    self._focus_solicited_response = True
                 else:
+                    self.focus_transition_ack_pending = False
                     self._release_response_hold(reason="focus_mode_exited")
                     self._focus_solicited_response = True
             self.logger.log(
@@ -587,6 +605,7 @@ class GeminiLiveSession:
         self._expect_candidate_transcript = False
         if self._focus_active:
             self._focus_solicited_response = quick_response
+            self.focus_transition_ack_pending = False
             self._cancel_response_hold(clear_output=True, reason="focus_mode")
         elif quick_response:
             self._release_response_hold(reason="explicit_question_or_handoff")
@@ -594,7 +613,11 @@ class GeminiLiveSession:
             self._start_response_hold()
 
     def _output_is_allowed(self) -> bool:
-        return not self._focus_active or self._focus_solicited_response
+        return (
+            not self._focus_active
+            or self._focus_solicited_response
+            or self.focus_transition_ack_pending
+        )
 
     def _process_message(self, message: Any, *, tool_call_pending: bool = False) -> None:
         interrupted = False
@@ -627,6 +650,7 @@ class GeminiLiveSession:
                 self._cancel_response_hold(clear_output=True, reason="model_interrupted")
                 self._allowed_audio_seen = False
                 self._focus_output_suppressed = False
+                self.focus_transition_ack_pending = False
                 self.logger.log("model_interrupted")
             if server_content.input_transcription and server_content.input_transcription.text:
                 input_text = server_content.input_transcription.text
@@ -665,6 +689,7 @@ class GeminiLiveSession:
         ):
             if self._allowed_audio_seen:
                 self.audio.finish_model_turn()
+                self.focus_transition_ack_pending = False
             if self._allowed_audio_seen or self._focus_output_suppressed or not tool_call_pending:
                 self._focus_solicited_response = False
                 self._focus_output_suppressed = False

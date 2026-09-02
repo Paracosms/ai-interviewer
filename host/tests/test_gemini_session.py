@@ -59,7 +59,7 @@ def test_live_config_enables_required_audio_and_session_features() -> None:
     assert dumped["responseModalities"] == [types.Modality.AUDIO]
     assert dumped["inputAudioTranscription"] == {}
     assert dumped["outputAudioTranscription"] == {}
-    assert dumped["realtimeInputConfig"]["automaticActivityDetection"]["silenceDurationMs"] == 1200
+    assert dumped["realtimeInputConfig"]["automaticActivityDetection"]["disabled"] is True
     assert dumped["thinkingConfig"]["thinkingLevel"] == types.ThinkingLevel.MINIMAL
     assert dumped["sessionResumption"] == {}
     assert dumped["contextWindowCompression"] == {"slidingWindow": {}}

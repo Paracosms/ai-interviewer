@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
-from .hint_gate import HintGate
+from .hint_gate import HINT_WARMUP_SECONDS, HintGate, InterviewPhase
 
 
 class InterviewStatus(str, Enum):
@@ -58,6 +58,10 @@ class InterviewState:
     problem_analysis_status: str = "unavailable"
     problem_analysis_error: str | None = None
     interaction_mode: InteractionMode = InteractionMode.CONVERSATION
+    interview_phase: InterviewPhase = "warmup"
+    last_hint_level: int = 0
+    typing_active_until: float = 0.0
+    code_sync_status: str = "connected"
 
     @property
     def is_active(self) -> bool:
@@ -67,6 +71,22 @@ class InterviewState:
             InterviewStatus.RECONNECTING,
             InterviewStatus.STOPPING,
         }
+
+    def mark_typing_activity(self, now: float | None = None) -> None:
+        timestamp = time.monotonic() if now is None else float(now)
+        self.typing_active_until = timestamp + 1.5
+
+    def candidate_is_typing(self, now: float | None = None) -> bool:
+        timestamp = time.monotonic() if now is None else float(now)
+        return timestamp < self.typing_active_until
+
+    def mark_code_sync_disconnected(self) -> None:
+        self.code_sync_status = "disconnected"
+
+    def current_interview_phase(self, now: float | None = None) -> InterviewPhase:
+        if self.interview_phase == "warmup" and self.elapsed_seconds(now=now) >= HINT_WARMUP_SECONDS:
+            return "approach"
+        return self.interview_phase
 
     def begin(
         self,
@@ -100,6 +120,10 @@ class InterviewState:
         self.problem_analysis_status = "pending"
         self.problem_analysis_error = None
         self.interaction_mode = InteractionMode.CONVERSATION
+        self.interview_phase = "warmup"
+        self.last_hint_level = 0
+        self.typing_active_until = 0.0
+        self.code_sync_status = "connected"
 
     def mark_running(self, *, gemini_connected: bool = True) -> None:
         if self.status not in {InterviewStatus.STARTING, InterviewStatus.RECONNECTING}:
@@ -151,6 +175,7 @@ class InterviewState:
         if not self.is_active:
             raise StateError("No interview is currently running.")
         if page_url != self.problem_url:
+            self.code_sync_status = "disconnected"
             raise ProblemChangedError("The active LeetCode problem changed. Stop and restart the interview.")
         if code_version < 0:
             raise StateError("code_version must be nonnegative.")
@@ -177,6 +202,8 @@ class InterviewState:
             self.code_source_id = code_source_id
         if code_changed:
             self.last_code_change_at = timestamp
+            self.interview_phase = "implementation"
+            self.code_sync_status = "connected"
         return CodeUpdateResult.RESYNCHRONIZED if source_changed else CodeUpdateResult.APPLIED
 
     def set_interaction_mode(self, mode: str | InteractionMode) -> InteractionMode:
@@ -186,6 +213,8 @@ class InterviewState:
             resolved = mode if isinstance(mode, InteractionMode) else InteractionMode(mode)
         except ValueError as exc:
             raise StateError("Interaction mode must be conversation or focus.") from exc
+        if self.interaction_mode == InteractionMode.FOCUS and resolved == InteractionMode.CONVERSATION:
+            self.interview_phase = "testing"
         self.interaction_mode = resolved
         return resolved
 
@@ -207,6 +236,10 @@ class InterviewState:
         self.problem_analysis_status = "unavailable"
         self.problem_analysis_error = None
         self.interaction_mode = InteractionMode.CONVERSATION
+        self.interview_phase = "warmup"
+        self.last_hint_level = 0
+        self.typing_active_until = 0.0
+        self.code_sync_status = "connected"
 
     def elapsed_seconds(self, *, now: float | None = None) -> float:
         if self.started_at_monotonic is None:
@@ -227,7 +260,9 @@ class InterviewState:
             elapsed_seconds=self.elapsed_seconds(now=timestamp),
             last_hint_at=self.last_hint_at,
             seconds_since_code_change=self.seconds_since_code_change(now=timestamp),
-            candidate_explicitly_requested_help=False,
+            candidate_explicitly_requested_help=True,
+            current_phase=self.current_interview_phase(now=timestamp),
+            last_hint_level=self.last_hint_level,
             now=timestamp,
         )
         return decision.allowed
@@ -257,4 +292,6 @@ class InterviewState:
             "problemAnalysisStatus": self.problem_analysis_status,
             "problemAnalysisError": self.problem_analysis_error,
             "interactionMode": self.interaction_mode.value,
+            "interviewPhase": self.current_interview_phase(now=timestamp),
+            "codeSyncStatus": self.code_sync_status,
         }

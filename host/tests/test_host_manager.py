@@ -113,7 +113,7 @@ def fake_problem_analysis():
                     when_to_use=f"candidate is stuck at stage {index}",
                     socratic_question=f"What information from earlier elements would help at stage {index}?",
                 )
-                for index in range(1, 6)
+                for index in range(1, 4)
             ],
         ),
     )
