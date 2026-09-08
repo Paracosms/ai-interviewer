@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-RESPONSE_HOLD_SECONDS = 10.0
+RESPONSE_HOLD_SECONDS = 1.5
 
 _QUESTION_START = re.compile(
     r"^(?:who|what|when|where|why|how|can|could|would|should|do|does|did|is|are|am|will|may|have|has)\b",

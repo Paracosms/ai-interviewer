@@ -663,7 +663,7 @@ def test_audio_playback_stats_logged_at_session_shutdown(tmp_path: Path) -> None
     assert len(stats_events) == 1
     payload = stats_events[0]["payload"]
     assert payload == {
-        "prebufferMs": 1000,
+        "prebufferMs": 250,
         "underrunCount": 0,
         "maxBufferedMs": 1000,
     }

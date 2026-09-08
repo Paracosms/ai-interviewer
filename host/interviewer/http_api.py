@@ -347,7 +347,7 @@ async def session_activity(request: web.Request) -> web.Response:
     if not runtime.state.is_active:
         return _json_response({"ok": False, "error": "No interview is running."}, status=409)
 
-    runtime.state.mark_typing_activity(time.time())
+    runtime.state.mark_typing_activity()
     return _json_response({"ok": True, "status": "accepted"})
 
 

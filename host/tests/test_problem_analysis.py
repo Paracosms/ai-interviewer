@@ -137,7 +137,7 @@ async def test_analysis_makes_one_tool_free_structured_request():
 
     assert len(client.models.calls) == 1
     call = client.models.calls[0]
-    assert call["model"] == PROBLEM_ANALYSIS_MODEL == "gemini-3.7-flash"
+    assert call["model"] == PROBLEM_ANALYSIS_MODEL == "gemini-3.8-flash"
     assert "sole authoritative source" in call["contents"]
     assert "Find two indices" in call["contents"]
     assert "google search" not in call["contents"].lower()
@@ -245,6 +245,7 @@ async def test_repeated_503_exhausts_bounded_attempts():
     analyzer = GeminiProblemAnalyzer(
         api_key="test",
         client=SimpleNamespace(models=models),
+        fallback_model=None,
         retry_delays=(0, 0),
     )
 
@@ -281,13 +282,48 @@ async def test_429_is_retried_with_backoff():
     )
 
     assert len(models.calls) == 2
+    assert models.calls[0]["model"] == "gemini-3.8-flash"
+    assert models.calls[1]["model"] == "gemini-3.8-flash"
+    assert analysis.dossier.problem_title == "Two Sum"
+
+
+@pytest.mark.asyncio
+async def test_primary_38_exhaustion_falls_back_to_37_flash():
+    models = SequencedModels(
+        [
+            # 3 attempts for gemini-3.8-flash
+            ProviderError(503, "high demand", status="UNAVAILABLE"),
+            ProviderError(503, "high demand", status="UNAVAILABLE"),
+            ProviderError(503, "high demand", status="UNAVAILABLE"),
+            # 1 successful attempt for gemini-3.7-flash fallback
+            response_with_text(dossier_json()),
+        ]
+    )
+    analyzer = GeminiProblemAnalyzer(
+        api_key="test",
+        client=SimpleNamespace(models=models),
+        retry_delays=(0, 0),
+    )
+
+    analysis = await analyzer.analyze(
+        problem_slug="two-sum",
+        problem_title="Two Sum",
+        problem_text="Find two indices whose values sum to target.",
+    )
+
+    assert len(models.calls) == 4
+    assert models.calls[0]["model"] == "gemini-3.8-flash"
+    assert models.calls[1]["model"] == "gemini-3.8-flash"
+    assert models.calls[2]["model"] == "gemini-3.8-flash"
+    assert models.calls[3]["model"] == "gemini-3.7-flash"
     assert analysis.dossier.problem_title == "Two Sum"
 
 
 @pytest.mark.asyncio
 async def test_429_exhaustion_raises_problem_analysis_error():
+    # 3 attempts on 3.8 + 3 attempts on 3.7 = 6 attempts total
     models = SequencedModels(
-        [ProviderError(429, "too many requests", status="RESOURCE_EXHAUSTED") for _ in range(3)]
+        [ProviderError(429, "too many requests", status="RESOURCE_EXHAUSTED") for _ in range(6)]
     )
     analyzer = GeminiProblemAnalyzer(
         api_key="test",
@@ -302,7 +338,7 @@ async def test_429_exhaustion_raises_problem_analysis_error():
             problem_text="Find two indices whose values sum to target.",
         )
 
-    assert len(models.calls) == 3
+    assert len(models.calls) == 6
     assert error.value.status_code == 429
 
 

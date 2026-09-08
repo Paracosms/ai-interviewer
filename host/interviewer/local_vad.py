@@ -40,6 +40,8 @@ class LocalVoiceActivityDetector:
         self._recent_window: deque[bool] = deque(maxlen=3)
         self._in_speech = False
         self._consecutive_unvoiced = 0
+        self._consecutive_voiced = 0
+        self._speech_frames = 0
         self._remainder = b""
 
     @property
@@ -50,6 +52,8 @@ class LocalVoiceActivityDetector:
         """Clear all active audio state and buffers."""
         self._in_speech = False
         self._consecutive_unvoiced = 0
+        self._consecutive_voiced = 0
+        self._speech_frames = 0
         self._pre_roll.clear()
         self._recent_window.clear()
         self._remainder = b""
@@ -77,6 +81,8 @@ class LocalVoiceActivityDetector:
                 if sum(self._recent_window) >= 2:
                     self._in_speech = True
                     self._consecutive_unvoiced = 0
+                    self._consecutive_voiced = 2
+                    self._speech_frames = 0
                     events.append(("activity_start", None))
                     # Flush pre-roll buffer before current frame
                     pre_roll_bytes = b"".join(self._pre_roll)
@@ -85,13 +91,24 @@ class LocalVoiceActivityDetector:
                     self._pre_roll.clear()
             else:
                 events.append(("audio", frame))
+                self._speech_frames += 1
                 if is_voiced:
-                    self._consecutive_unvoiced = 0
+                    self._consecutive_voiced += 1
+                    if self._consecutive_voiced >= 2:
+                        self._consecutive_unvoiced = 0
                 else:
+                    self._consecutive_voiced = 0
                     self._consecutive_unvoiced += 1
-                    if self._consecutive_unvoiced >= silence_limit:
+                    max_speech_frames = int(15000 / self.frame_duration_ms)
+                    force_end = (
+                        self._speech_frames >= max_speech_frames
+                        and self._consecutive_unvoiced >= max(1, silence_limit // 2)
+                    )
+                    if self._consecutive_unvoiced >= silence_limit or force_end:
                         self._in_speech = False
                         self._consecutive_unvoiced = 0
+                        self._consecutive_voiced = 0
+                        self._speech_frames = 0
                         events.append(("activity_end", None))
 
         return events

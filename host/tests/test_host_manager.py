@@ -276,7 +276,7 @@ async def test_problem_analysis_failure_does_not_stop_live_interview(tmp_path, m
         )
         expected_diagnostics = {
             "operation": "prepare_problem_analysis",
-            "model": "gemini-3.7-flash",
+            "model": "gemini-3.8-flash",
             "attempt": 1,
             "exceptionType": "RuntimeError",
             "statusCode": None,

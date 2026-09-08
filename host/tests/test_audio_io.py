@@ -136,11 +136,11 @@ def test_microphone_failure_is_actionable_and_does_not_leave_audio_running(monke
     assert audio.running is False
 
 
-def test_default_playback_buffer_prebuffer_is_one_second() -> None:
+def test_default_playback_buffer_prebuffer_is_configured_value() -> None:
     audio = AudioIO()
-    assert audio.output_buffer.prebuffer_ms == 1000
+    assert audio.output_buffer.prebuffer_ms == 250
     assert audio.playback_stats == {
-        "prebufferMs": 1000,
+        "prebufferMs": 250,
         "underrunCount": 0,
         "maxBufferedMs": 0,
     }
@@ -237,7 +237,7 @@ def test_underruns_increment_once_per_starvation_rebuffer_transition() -> None:
     # Verify stats contain strictly numeric fields and no audio content
     stats = audio.playback_stats
     assert stats == {
-        "prebufferMs": 1000,
+        "prebufferMs": 250,
         "underrunCount": 2,
         "maxBufferedMs": 1000,
     }

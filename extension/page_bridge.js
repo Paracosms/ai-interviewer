@@ -151,8 +151,16 @@
     return selected;
   }
 
+  function extractProblemSlug(url) {
+    const match = String(url || "").match(/\/problems\/([^/?#]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
   function pollEditor() {
-    if (window.location.href !== lastPageUrl) {
+    const prevSlug = extractProblemSlug(lastPageUrl);
+    const currSlug = extractProblemSlug(window.location.href);
+    const slugChanged = prevSlug !== currSlug || (!currSlug && window.location.href !== lastPageUrl);
+    if (slugChanged) {
       lastPageUrl = window.location.href;
       lastCode = null;
       lastLanguage = null;
@@ -161,6 +169,8 @@
       selectedModel = null;
       ensureContentListener(null);
       modelSnapshots = new WeakMap();
+    } else if (window.location.href !== lastPageUrl) {
+      lastPageUrl = window.location.href;
     }
     const selected = chooseModel();
     if (!selected) {

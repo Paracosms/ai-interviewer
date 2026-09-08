@@ -13,7 +13,9 @@ from google.genai import types
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
-PROBLEM_ANALYSIS_MODEL = "gemini-3.7-flash"
+PROBLEM_ANALYSIS_PRIMARY_MODEL = "gemini-3.8-flash"
+PROBLEM_ANALYSIS_FALLBACK_MODEL = "gemini-3.7-flash"
+PROBLEM_ANALYSIS_MODEL = PROBLEM_ANALYSIS_PRIMARY_MODEL
 PROBLEM_ANALYSIS_MAX_ATTEMPTS = 4
 PROBLEM_ANALYSIS_RETRY_DELAYS = (30.0, 60.0, 180.0)
 _TRANSIENT_SERVER_CODES = frozenset({500, 502, 503, 504})
@@ -289,13 +291,15 @@ def _redacted_provider_message(
 
 
 class GeminiProblemAnalyzer:
-    """Make bounded, tool-free Gemini 3.7 Flash requests per interview start."""
+    """Make bounded, tool-free Gemini 3.8 Flash requests per interview start, with 3.7 Flash fallback."""
 
     def __init__(
         self,
         *,
         api_key: str,
         client: Any | None = None,
+        primary_model: str = PROBLEM_ANALYSIS_PRIMARY_MODEL,
+        fallback_model: str | None = PROBLEM_ANALYSIS_FALLBACK_MODEL,
         retry_delays: Sequence[float] = PROBLEM_ANALYSIS_RETRY_DELAYS,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         failure_observer: Callable[[Mapping[str, Any]], None] | None = None,
@@ -307,10 +311,13 @@ class GeminiProblemAnalyzer:
             ),
         )
         self._api_key_for_redaction = api_key
+        self.primary_model = primary_model
+        self.fallback_model = fallback_model
         self.retry_delays = tuple(float(delay) for delay in retry_delays)
         self.sleep = sleep
         self.failure_observer = failure_observer
         self.current_attempt = 0
+        self.active_model = primary_model
 
     def _report_attempt_failure(self, payload: Mapping[str, Any]) -> None:
         if self.failure_observer is None:
@@ -342,77 +349,99 @@ class GeminiProblemAnalyzer:
         )
         started_at = time.monotonic()
         response: Any | None = None
+        models_to_try = [self.primary_model]
+        if self.fallback_model and self.fallback_model != self.primary_model:
+            models_to_try.append(self.fallback_model)
+
         max_attempts = min(PROBLEM_ANALYSIS_MAX_ATTEMPTS, len(self.retry_delays) + 1)
-        for attempt in range(1, max_attempts + 1):
-            self.current_attempt = attempt
-            try:
-                async_models = getattr(getattr(self.client, "aio", None), "models", None)
-                if async_models is not None:
-                    response = await async_models.generate_content(
-                        model=PROBLEM_ANALYSIS_MODEL,
-                        contents=prompt,
-                        config=config,
+        last_exc: BaseException | None = None
+        last_error_kwargs: dict[str, Any] = {}
+        last_model = self.primary_model
+
+        for model in models_to_try:
+            self.active_model = model
+            last_model = model
+            for attempt in range(1, max_attempts + 1):
+                self.current_attempt = attempt
+                try:
+                    async_models = getattr(getattr(self.client, "aio", None), "models", None)
+                    if async_models is not None:
+                        response = await async_models.generate_content(
+                            model=model,
+                            contents=prompt,
+                            config=config,
+                        )
+                    else:
+                        # Test doubles and older SDK clients may expose only the sync API.
+                        response = await asyncio.to_thread(
+                            self.client.models.generate_content,
+                            model=model,
+                            contents=prompt,
+                            config=config,
+                        )
+                    last_exc = None
+                    break
+                except Exception as exc:  # noqa: BLE001 - expose one clear startup failure.
+                    last_exc = exc
+                    elapsed_seconds = time.monotonic() - started_at
+                    status_code = _numeric_status_code(exc)
+                    provider_message = _redacted_provider_message(
+                        exc,
+                        sensitive_values=(
+                            prompt,
+                            problem_text,
+                            problem_title,
+                            problem_slug,
+                            self._api_key_for_redaction,
+                        ),
                     )
-                else:
-                    # Test doubles and older SDK clients may expose only the sync API.
-                    response = await asyncio.to_thread(
-                        self.client.models.generate_content,
-                        model=PROBLEM_ANALYSIS_MODEL,
-                        contents=prompt,
-                        config=config,
-                    )
+                    failure_details = {
+                        "operation": "generate_content",
+                        "model": model,
+                        "attempt": attempt,
+                        "exceptionType": type(exc).__name__,
+                        "statusCode": status_code,
+                        "providerMessage": provider_message,
+                        "elapsedSeconds": round(elapsed_seconds, 3),
+                    }
+                    self._report_attempt_failure(failure_details)
+                    last_error_kwargs = {
+                        "operation": "generate_content",
+                        "model": model,
+                        "attempt": attempt,
+                        "exception_type": type(exc).__name__,
+                        "status_code": status_code,
+                        "provider_message": provider_message,
+                        "elapsed_seconds": elapsed_seconds,
+                    }
+                    if (_is_rate_limit_error(exc) or _is_transient_server_error(exc)) and attempt < max_attempts:
+                        await self.sleep(self.retry_delays[attempt - 1])
+                        continue
+                    break
+
+            if last_exc is None:
                 break
-            except Exception as exc:  # noqa: BLE001 - expose one clear startup failure.
-                elapsed_seconds = time.monotonic() - started_at
-                status_code = _numeric_status_code(exc)
-                provider_message = _redacted_provider_message(
-                    exc,
-                    sensitive_values=(
-                        prompt,
-                        problem_text,
-                        problem_title,
-                        problem_slug,
-                        self._api_key_for_redaction,
-                    ),
-                )
-                failure_details = {
-                    "operation": "generate_content",
-                    "model": PROBLEM_ANALYSIS_MODEL,
-                    "attempt": attempt,
-                    "exceptionType": type(exc).__name__,
-                    "statusCode": status_code,
-                    "providerMessage": provider_message,
-                    "elapsedSeconds": round(elapsed_seconds, 3),
-                }
-                self._report_attempt_failure(failure_details)
-                error_kwargs = {
-                    "attempt": attempt,
-                    "exception_type": type(exc).__name__,
-                    "status_code": status_code,
-                    "provider_message": provider_message,
-                    "elapsed_seconds": elapsed_seconds,
-                }
-                if (_is_rate_limit_error(exc) or _is_transient_server_error(exc)) and attempt < max_attempts:
-                    await self.sleep(self.retry_delays[attempt - 1])
-                    continue
-                if _is_rate_limit_error(exc):
-                    raise ProblemAnalysisError(
-                        "Gemini 3.7 Flash rate limit or project quota was reached after "
-                        f"{attempt} attempts while preparing the interviewer hint dossier. "
-                        "No Search or other paid tool was used, and no paid fallback was attempted.",
-                        **error_kwargs,
-                    ) from exc
-                if _is_transient_server_error(exc):
-                    raise ProblemAnalysisError(
-                        "Gemini 3.7 Flash remained temporarily unavailable after "
-                        f"{attempt} attempts while preparing the interviewer hint dossier.",
-                        **error_kwargs,
-                    ) from exc
+
+        if last_exc is not None:
+            attempt = last_error_kwargs.get("attempt", max_attempts)
+            if _is_rate_limit_error(last_exc):
                 raise ProblemAnalysisError(
-                    "Gemini 3.7 Flash could not prepare the interviewer hint dossier: "
-                    f"{provider_message}",
-                    **error_kwargs,
-                ) from exc
+                    f"{last_model} rate limit or project quota was reached after "
+                    f"{attempt} attempts while preparing the interviewer hint dossier. "
+                    "No Search or other paid tool was used, and no paid fallback was attempted.",
+                    **last_error_kwargs,
+                ) from last_exc
+            if _is_transient_server_error(last_exc):
+                raise ProblemAnalysisError(
+                    f"{last_model} remained temporarily unavailable after "
+                    f"{attempt} attempts while preparing the interviewer hint dossier.",
+                    **last_error_kwargs,
+                ) from last_exc
+            raise ProblemAnalysisError(
+                f"{last_model} could not prepare the interviewer hint dossier: "
+                f"{last_error_kwargs.get('provider_message', 'request failed')}",
+                **last_error_kwargs,
+            ) from last_exc
 
         try:
             parsed = getattr(response, "parsed", None)
@@ -423,9 +452,10 @@ class GeminiProblemAnalyzer:
             )
         except (AttributeError, TypeError, ValueError, ValidationError) as exc:
             raise ProblemAnalysisError(
-                "Gemini 3.7 Flash returned an invalid interviewer hint dossier.",
+                f"{self.active_model} returned an invalid interviewer hint dossier.",
                 operation="parse_problem_dossier",
-                attempt=attempt,
+                model=self.active_model,
+                attempt=self.current_attempt,
                 exception_type=type(exc).__name__,
                 provider_message="Structured output did not match the ProblemDossier schema.",
                 elapsed_seconds=time.monotonic() - started_at,

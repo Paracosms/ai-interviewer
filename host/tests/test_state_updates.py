@@ -164,3 +164,28 @@ def test_stopping_rejects_late_connection_callbacks() -> None:
     HostSessionManager._mark_reconnecting(state)
     assert state.status.value == "stopping"
     assert state.gemini_connected is False
+
+
+def test_problem_submission_and_tab_urls_are_accepted_for_same_slug() -> None:
+    state = make_state()
+    # Submission URL
+    res1 = state.update_code(
+        page_url="https://leetcode.com/problems/two-sum/submissions/1376912345/",
+        language="python3",
+        code="def twoSum(nums, target): return [0, 1]",
+        code_version=2,
+        now=130,
+    )
+    assert res1.value == "applied"
+    assert state.code_sync_status == "connected"
+
+    # Tab URL with query params
+    res2 = state.update_code(
+        page_url="https://leetcode.com/problems/two-sum/description/?envType=study-plan-v2",
+        language="python3",
+        code="def twoSum(nums, target): return [0, 1]",
+        code_version=2,
+        now=140,
+    )
+    assert res2.value == "ignored_duplicate"
+    assert state.code_sync_status == "connected"

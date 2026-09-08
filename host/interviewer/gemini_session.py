@@ -135,7 +135,7 @@ Initial code:
 
 PRIVATE INTERVIEWER DOSSIER
 
-The application prepares a private statement-based dossier with Gemini 3.7 Flash from the supplied
+The application prepares a private statement-based dossier with Gemini 3.8 Flash (with Gemini 3.7 Flash fallback) from the supplied
 problem statement and constraints. It is not externally searched or verified. The dossier is being
 prepared in the background. You have access to it through get_current_interview_state and
 request_micro_hint as soon as it is ready.
@@ -839,7 +839,7 @@ class HostSessionManager:
             raise
         except Exception as exc:  # noqa: BLE001 - analysis failure must not stop Live.
             if self._analysis_context is context and state.is_active:
-                message = str(exc) or "Gemini 3.7 Flash could not prepare the interviewer hint dossier."
+                message = str(exc) or "Gemini could not prepare the interviewer hint dossier."
                 context.mark_error(message)
                 state.mark_problem_analysis_error(message)
                 if self._logger is not None:

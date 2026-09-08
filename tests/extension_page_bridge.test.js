@@ -86,6 +86,36 @@ test("page bridge reacquires the model after SPA navigation", () => {
   assert.equal(messages[1].type, "CODE_SNAPSHOT");
 });
 
+test("page bridge retains model and does not emit error on submission URL", () => {
+  const messages = [];
+  let poll;
+  const model = makeModel("class Solution: pass", "python", "model");
+  const window = {
+    location: { href: "https://leetcode.com/problems/two-sum/description/", origin: "https://leetcode.com" },
+    postMessage(message) {
+      messages.push(message);
+    },
+    monaco: { editor: { getModels: () => [model] } },
+  };
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "extension", "page_bridge.js"),
+    "utf8",
+  );
+  vm.runInNewContext(source, {
+    Date,
+    window,
+    setInterval(callback) {
+      poll = callback;
+      return 1;
+    },
+    console,
+  });
+  assert.equal(messages.length, 1);
+  window.location.href = "https://leetcode.com/problems/two-sum/submissions/1376912345/";
+  poll();
+  assert.equal(messages.some((m) => m.type === "DETECTION_ERROR"), false);
+});
+
 test("page bridge republishes an unchanged snapshot for a delayed listener", () => {
   const messages = [];
   let now = 1000;

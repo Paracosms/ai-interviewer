@@ -100,7 +100,8 @@
   }
 
   function extractProblemSlug() {
-    const match = window.location.pathname.match(/^\/problems\/([^/]+)/);
+    const source = window.location.pathname || window.location.href || "";
+    const match = source.match(/\/problems\/([^/?#]+)/);
     return match ? decodeURIComponent(match[1]) : "";
   }
 
@@ -273,8 +274,14 @@
   }
 
   function checkNavigation() {
-    if (window.location.href !== pageUrl) {
+    const prevMatch = String(pageUrl || "").match(/\/problems\/([^/?#]+)/);
+    const prevSlug = prevMatch ? decodeURIComponent(prevMatch[1]) : "";
+    const currSlug = extractProblemSlug();
+    const slugChanged = prevSlug !== currSlug || (!currSlug && window.location.href !== pageUrl);
+    if (slugChanged) {
       resetForNavigation();
+    } else if (window.location.href !== pageUrl) {
+      pageUrl = window.location.href;
     }
   }
 

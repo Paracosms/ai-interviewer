@@ -24,15 +24,14 @@ configurable port, defaulting to `8765`.
 - A Google AI Studio Gemini API key with free-tier access
 - Headphones or a headset
 
-At every interview start, the host makes exactly one background request to the
-fixed `gemini-3.7-flash` model. The request uses structured JSON output and
-high thinking, but no Google Search or any other Gemini built-in tool. It
-analyzes the complete supplied problem statement and constraints to prepare a
-progressive Socratic hint ladder. This keeps the request compatible with
-ordinary free-tier model usage. It runs concurrently with the configured
-Gemini Live voice session, so it does not delay interview startup. There is no
-alternate analysis model or paid fallback, and the application never makes an
-OpenAI request.
+At every interview start, the host makes background requests to the
+`gemini-3.8-flash` model (falling back to `gemini-3.7-flash` if unavailable).
+The request uses structured JSON output and medium thinking, but no Google Search
+or any other Gemini built-in tool. It analyzes the complete supplied problem statement
+and constraints to prepare a progressive Socratic hint ladder. This keeps the request
+compatible with ordinary free-tier model usage. It runs concurrently with the configured
+Gemini Live voice session, so it does not delay interview startup. The application
+never makes an OpenAI request.
 
 ## First-time host setup
 
@@ -232,8 +231,8 @@ suite uses fake Live sessions and cannot prove external service behavior.
 2. The user must wear headphones or a headset.
 3. LeetCode DOM or editor changes may require selector updates.
 4. The configured Gemini Live model is a preview model and its identifier or
-   availability may change. The analysis model is fixed to stable
-   `gemini-3.7-flash`.
+   availability may change. The primary analysis model is `gemini-3.8-flash`
+   with `gemini-3.7-flash` fallback.
 5. The application stops when Live session quota is unavailable. If the single
    statement-based analysis request reaches a Gemini rate limit or project
    quota, the interview continues in neutral mode without precomputed hints.

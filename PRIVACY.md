@@ -6,8 +6,8 @@ database, analytics, advertising, automatic updates, or third-party telemetry.
 - The Firefox extension reads the current LeetCode problem and Monaco editor
   code from the active `leetcode.com/problems/*` page.
 - At each interview start, the local host sends the complete supplied problem
-  statement and constraints to Gemini 3.7 Flash in one background request. The
-  request uses structured output and high thinking, and does not enable
+  statement and constraints to Gemini 3.8 Flash (with Gemini 3.7 Flash fallback) in one background request. The
+  request uses structured output and medium thinking, and does not enable
   Google Search or any other built-in Gemini tool. The model-generated dossier
   may be wrong; it includes confidence and assumptions and is not externally
   verified.

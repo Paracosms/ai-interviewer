@@ -74,3 +74,31 @@ def test_vad_silence_hangover_extends_when_typing_active():
             end_emitted = True
     assert end_emitted
     assert not detector.in_speech
+
+
+def test_vad_transient_noise_during_silence_does_not_prevent_activity_end():
+    detector = LocalVoiceActivityDetector(
+        normal_silence_ms=80,  # 4 frames of 20ms
+        frame_duration_ms=20,
+    )
+    voice_frame = make_sine_frame(freq=250.0)
+    silence = make_silence_frame()
+
+    # Trigger speech
+    detector.process_chunk(voice_frame)
+    detector.process_chunk(voice_frame)
+    assert detector.in_speech
+
+    # Frame 1: silence
+    detector.process_chunk(silence)
+    # Frame 2: isolated transient noise (1 frame)
+    detector.process_chunk(voice_frame)
+    # Frames 3, 4, 5: silence
+    detector.process_chunk(silence)
+    detector.process_chunk(silence)
+    events = detector.process_chunk(silence)
+
+    # The single noise glitch did not reset silence counting; activity_end is emitted
+    assert any(e[0] == "activity_end" for e in events)
+    assert not detector.in_speech
+

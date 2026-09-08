@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
 
 from .hint_gate import HINT_WARMUP_SECONDS, HintGate, InterviewPhase
+
+_LEETCODE_PROBLEM_SLUG_RE = re.compile(
+    r"/problems/([^/?#]+)",
+    re.IGNORECASE,
+)
+
+
+def extract_problem_slug(url: str) -> str:
+    """Extract canonical slug from any LeetCode problem URL, tab, or submission."""
+    match = _LEETCODE_PROBLEM_SLUG_RE.search(str(url or "").strip())
+    return match.group(1).lower() if match else ""
 
 
 class InterviewStatus(str, Enum):
@@ -174,9 +186,18 @@ class InterviewState:
             raise StateError("No interview problem has been started.")
         if not self.is_active:
             raise StateError("No interview is currently running.")
-        if page_url != self.problem_url:
+        incoming_slug = extract_problem_slug(page_url)
+        current_slug = extract_problem_slug(self.problem_url) if self.problem_url else ""
+        is_same_problem = (
+            incoming_slug == current_slug
+            if (incoming_slug and current_slug)
+            else (page_url == self.problem_url)
+        )
+        if not is_same_problem:
             self.code_sync_status = "disconnected"
             raise ProblemChangedError("The active LeetCode problem changed. Stop and restart the interview.")
+        self.code_sync_status = "connected"
+        self.problem_url = page_url
         if code_version < 0:
             raise StateError("code_version must be nonnegative.")
         source_changed = bool(
