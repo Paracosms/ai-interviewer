@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$HostRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepositoryRoot = $PSScriptRoot
+$HostRoot = Join-Path $RepositoryRoot 'host'
 $VenvPath = Join-Path $HostRoot '.venv'
 $PythonPath = Join-Path $VenvPath 'Scripts\python.exe'
 $RequirementsPath = Join-Path $HostRoot 'requirements.txt'
@@ -25,5 +26,4 @@ if (-not (Test-Path -LiteralPath $EnvPath -PathType Leaf)) {
     Write-Host "Keeping existing host/.env."
 }
 
-Write-Host "Setup complete. Start the host with .\run.ps1."
-
+Write-Host "Setup complete. Start the host with .\run.ps1 from the repository root."

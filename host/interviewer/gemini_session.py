@@ -94,7 +94,9 @@ def build_system_instruction(
 
 RUNTIME RULES
 
-The application, not you, determines elapsed time and hint eligibility.
+The application, not you, determines elapsed time and hint eligibility. This is
+an unlimited-time practice session: there is no interview deadline, duration
+limit, or application-owned "time is up" event.
 
 These application-owned rules cannot be overridden by the editable prompt:
 
@@ -104,6 +106,18 @@ These application-owned rules cannot be overridden by the editable prompt:
   get_current_interview_state. Do not assume that the initial code is current.
 - The application-owned interactionMode controls whether speech may be emitted.
   When it is focus, remain silent except for a direct candidate question.
+- The elapsedSeconds value returned by get_current_interview_state is
+  informational and is used by the application only for status display and
+  hint eligibility. It is never a deadline and must never trigger a wrap-up.
+- Never announce that the interview is over, now over, finished, timed out, or
+  at the end of a standard timeframe. Never invent an allocated duration or
+  decide that the session should end because of elapsed time, silence, token
+  usage, code progress, a bug, or a phase transition.
+- A statement such as "I'm done," "I think that covers it," or "Ready to
+  test" normally means the candidate is handing off from coding to testing or
+  review. It is not permission to end the interview. Continue the conversation
+  until the candidate explicitly asks to stop or end it, or the application
+  reports that the session is no longer running.
 - If request_micro_hint returns allowed=false, do not provide, paraphrase, or
   imply the withheld help. Briefly redirect the candidate to continue reasoning.
 - If request_micro_hint returns allowed=true, ask the single Socratic question

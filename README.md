@@ -36,7 +36,6 @@ never makes an OpenAI request.
 ## First-time host setup
 
 ```powershell
-cd host
 .\setup.ps1
 ```
 
@@ -69,7 +68,6 @@ when Windows defaults are not appropriate.
 ## Start the host
 
 ```powershell
-cd host
 .\run.ps1
 ```
 
@@ -136,7 +134,7 @@ extension.
 ## Run an interview
 
 1. Wear headphones.
-2. Start `host/run.ps1`.
+2. Start `run.ps1` from the repository root.
 3. Open a LeetCode problem in Firefox.
 4. Wait for the problem description and editor to load.
 5. Open the signed extension popup.
@@ -218,10 +216,11 @@ After installing the Mozilla-signed XPI in release Firefox, verify one Python
 problem and one Java problem, comments and off-screen code, a language switch,
 LeetCode SPA navigation, host offline/restart, default and alternate ports,
 and an intentionally incorrect then corrected extension port. Run the voice
-checks before 20 minutes (direct requests for an algorithm, code, or the
-answer must be redirected), an eligible post-20-minute request (exactly one
-short Socratic question), interruption while model audio is playing, and a
-25–30 minute session crossing a normal Live connection renewal. These checks
+checks during the initial hint warmup (direct requests for an algorithm, code,
+or the answer must be redirected), after hint eligibility unlocks (exactly one
+short Socratic question when the gate permits it), interruption while model
+audio is playing, and a 25–30 minute session crossing a normal Live connection
+renewal. The interview itself has no automatic duration limit. These checks
 require the user's Gemini API key and signed XPI installation; the automated
 suite uses fake Live sessions and cannot prove external service behavior.
 
@@ -241,7 +240,7 @@ suite uses fake Live sessions and cannot prove external service behavior.
 8. The dossier is model-generated from the supplied statement and constraints;
    it is useful but not externally verified and cannot be guaranteed correct.
 9. No theoretical guarantee can prevent every possible model-policy violation,
-   although the private dossier, timer, tool gate, prompt rules, and acceptance
+   although the private dossier, hint timing, tool gate, prompt rules, and acceptance
    tests substantially constrain assistance.
 10. Only one interview can run at a time.
 11. Changing to another LeetCode problem requires stopping and starting a new

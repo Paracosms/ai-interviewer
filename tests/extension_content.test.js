@@ -4,10 +4,11 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function textElement(text) {
+function textElement(text, onClone = () => {}) {
   return {
     textContent: text,
     cloneNode() {
+      onClone();
       return {
         textContent: text,
         querySelectorAll() {
@@ -22,6 +23,7 @@ function loadContent({ title = "Two Sum", description = "", descriptionSelector 
   const messages = [];
   const intervals = [];
   const timeouts = [];
+  let descriptionCloneCount = 0;
   const window = {
     location: {
       href: "https://leetcode.com/problems/two-sum/",
@@ -34,7 +36,9 @@ function loadContent({ title = "Two Sum", description = "", descriptionSelector 
     },
   };
   const titleElement = title ? textElement(title) : null;
-  const descriptionElement = description ? textElement(description) : null;
+  const descriptionElement = description
+    ? textElement(description, () => { descriptionCloneCount += 1; })
+    : null;
   const document = {
     querySelector(selector) {
       if (selector.includes("question-title")) {
@@ -115,6 +119,13 @@ function loadContent({ title = "Two Sum", description = "", descriptionSelector 
       const callback = timeouts.shift();
       assert.ok(callback, "expected a pending code debounce");
       callback();
+    },
+    getDescriptionCloneCount() {
+      return descriptionCloneCount;
+    },
+    navigate(href, pathname) {
+      window.location.href = href;
+      window.location.pathname = pathname;
     },
     requestPageState,
   };
@@ -211,4 +222,36 @@ test("content script ignores spoofed page messages from another window", () => {
     {},
   );
   assert.equal(harness.messages.length, before);
+});
+
+test("content script caches an extracted problem description until navigation", async () => {
+  const harness = loadContent({ description: "Description text. ".repeat(20) });
+  harness.tick();
+  harness.tick();
+  await latestPageState(harness);
+  assert.equal(harness.getDescriptionCloneCount(), 1);
+
+  harness.navigate(
+    "https://leetcode.com/problems/valid-parentheses/",
+    "/problems/valid-parentheses/",
+  );
+  harness.tick();
+  assert.equal(harness.getDescriptionCloneCount(), 2);
+  assert.equal((await latestPageState(harness)).problemSlug, "valid-parentheses");
+});
+
+test("content script accepts and throttles typing activity", () => {
+  const harness = loadContent({ description: "Description text. ".repeat(20) });
+  const activity = {
+    source: "leetcode-ai-interviewer-page-bridge",
+    protocolVersion: 1,
+    type: "TYPING_ACTIVITY",
+    payload: {},
+  };
+  harness.dispatch(activity);
+  harness.dispatch(activity);
+
+  const typingMessages = harness.messages.filter((message) => message.type === "TYPING_ACTIVITY");
+  assert.equal(typingMessages.length, 1);
+  assert.equal(typingMessages[0].payload.activity, "typing");
 });

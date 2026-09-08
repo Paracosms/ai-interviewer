@@ -1,10 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
-$HostRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepositoryRoot = $PSScriptRoot
+$HostRoot = Join-Path $RepositoryRoot 'host'
 $PythonPath = Join-Path $HostRoot '.venv\Scripts\python.exe'
 
 if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
-    throw "The host virtual environment is missing. Run .\setup.ps1 from the host directory first."
+    throw "The host virtual environment is missing. Run .\setup.ps1 from the repository root first."
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $HostRoot '.env') -PathType Leaf)) {
@@ -21,4 +22,3 @@ try {
 finally {
     Pop-Location
 }
-

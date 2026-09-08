@@ -4,10 +4,15 @@
   const MESSAGE_SOURCE = "leetcode-ai-interviewer-page-bridge";
   const PROTOCOL_VERSION = 1;
   const MAX_CODE_LENGTH = 50000;
-  const SNAPSHOT_HEARTBEAT_MS = 3000;
+  const FALLBACK_POLL_MS = 3000;
+  const MODEL_RESCAN_MS = 15000;
+  const SNAPSHOT_HEARTBEAT_MS = 15000;
+  const SNAPSHOT_DEBOUNCE_MS = 100;
+  const TYPING_ACTIVITY_THROTTLE_MS = 500;
   const EDITOR_NOT_DETECTED_MESSAGE = "LeetCode editor model was not detected. Reload the problem page and try again.";
   let lastCode = null;
   let lastLanguage = null;
+  let lastVersion = null;
   let lastError = null;
   let lastPageUrl = window.location.href;
   let lastSnapshotAt = 0;
@@ -15,11 +20,39 @@
   let modelSnapshots = new WeakMap();
   let activeContentListener = null;
   let activeListenedModel = null;
+  let snapshotDebounceTimer = null;
+  let lastTypingActivityAt = 0;
+  let lastModelScanAt = 0;
+
+  function clearSnapshotDebounce() {
+    if (snapshotDebounceTimer !== null) {
+      clearTimeout(snapshotDebounceTimer);
+      snapshotDebounceTimer = null;
+    }
+  }
+
+  function publishTypingActivity() {
+    const now = Date.now();
+    if (now - lastTypingActivityAt < TYPING_ACTIVITY_THROTTLE_MS) {
+      return;
+    }
+    lastTypingActivityAt = now;
+    publish("TYPING_ACTIVITY", {});
+  }
+
+  function scheduleActiveModelSnapshot() {
+    clearSnapshotDebounce();
+    snapshotDebounceTimer = setTimeout(() => {
+      snapshotDebounceTimer = null;
+      publishModelSnapshot(activeListenedModel);
+    }, SNAPSHOT_DEBOUNCE_MS);
+  }
 
   function ensureContentListener(model) {
     if (model === activeListenedModel) {
       return;
     }
+    clearSnapshotDebounce();
     if (activeContentListener && typeof activeContentListener.dispose === "function") {
       try {
         activeContentListener.dispose();
@@ -30,7 +63,8 @@
     if (model && typeof model.onDidChangeContent === "function") {
       try {
         activeContentListener = model.onDidChangeContent(() => {
-          publish("TYPING_ACTIVITY", {});
+          publishTypingActivity();
+          scheduleActiveModelSnapshot();
         });
       } catch (_) {}
     }
@@ -57,6 +91,7 @@
     const visibleModels = new Set();
     try {
       models = monaco.editor.getModels();
+      lastModelScanAt = Date.now();
       const editors = monaco.editor.getEditors?.() || [];
       for (const editor of editors) {
         const node = editor.getDomNode?.();
@@ -156,6 +191,72 @@
     return match ? decodeURIComponent(match[1]) : "";
   }
 
+  function readModelSnapshot(model) {
+    if (!model) {
+      return null;
+    }
+    try {
+      const code = model.getValue();
+      const language = model.getLanguageId?.() || "";
+      if (
+        typeof code !== "string"
+        || code.length > MAX_CODE_LENGTH
+        || !language
+        || language.toLowerCase() === "plaintext"
+      ) {
+        return null;
+      }
+      return {
+        code,
+        language,
+        version: model.getVersionId?.() ?? null,
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function publishModelSnapshot(model, force = false) {
+    const now = Date.now();
+    if (!force && model === selectedModel && lastLanguage) {
+      try {
+        const currentVersion = model.getVersionId?.() ?? null;
+        const currentLanguage = model.getLanguageId?.() || "";
+        if (
+          currentVersion !== null
+          && currentVersion === lastVersion
+          && currentLanguage === lastLanguage
+          && now - lastSnapshotAt < SNAPSHOT_HEARTBEAT_MS
+        ) {
+          return true;
+        }
+      } catch (_error) {}
+    }
+    const snapshot = readModelSnapshot(model);
+    if (!snapshot) {
+      return false;
+    }
+    if (
+      !force
+      && snapshot.code === lastCode
+      && snapshot.language === lastLanguage
+      && now - lastSnapshotAt < SNAPSHOT_HEARTBEAT_MS
+    ) {
+      lastVersion = snapshot.version;
+      return true;
+    }
+    lastCode = snapshot.code;
+    lastLanguage = snapshot.language;
+    lastVersion = snapshot.version;
+    lastSnapshotAt = now;
+    lastError = null;
+    publish("CODE_SNAPSHOT", {
+      ...snapshot,
+      editorDetected: true,
+    });
+    return true;
+  }
+
   function pollEditor() {
     const prevSlug = extractProblemSlug(lastPageUrl);
     const currSlug = extractProblemSlug(window.location.href);
@@ -164,15 +265,27 @@
       lastPageUrl = window.location.href;
       lastCode = null;
       lastLanguage = null;
+      lastVersion = null;
       lastError = null;
       lastSnapshotAt = 0;
       selectedModel = null;
+      lastModelScanAt = 0;
+      clearSnapshotDebounce();
       ensureContentListener(null);
       modelSnapshots = new WeakMap();
     } else if (window.location.href !== lastPageUrl) {
       lastPageUrl = window.location.href;
     }
-    const selected = chooseModel();
+    const now = Date.now();
+    let canReuseSelectedModel = false;
+    if (selectedModel) {
+      try {
+        canReuseSelectedModel = selectedModel.isDisposed?.() !== true
+          && selectedModel.isAttachedToEditor?.() === true
+          && now - lastModelScanAt < MODEL_RESCAN_MS;
+      } catch (_error) {}
+    }
+    const selected = canReuseSelectedModel ? { model: selectedModel } : chooseModel();
     if (!selected) {
       ensureContentListener(null);
       if (lastError !== EDITOR_NOT_DETECTED_MESSAGE) {
@@ -181,27 +294,9 @@
       }
       return;
     }
-    lastError = null;
-    const { code, language, version } = selected;
-    const now = Date.now();
-    if (
-      code === lastCode &&
-      language === lastLanguage &&
-      now - lastSnapshotAt < SNAPSHOT_HEARTBEAT_MS
-    ) {
-      return;
-    }
-    lastCode = code;
-    lastLanguage = language;
-    lastSnapshotAt = now;
-    publish("CODE_SNAPSHOT", {
-      code,
-      language,
-      version,
-      editorDetected: true,
-    });
+    publishModelSnapshot(selected.model);
   }
 
-  setInterval(pollEditor, 750);
+  setInterval(pollEditor, FALLBACK_POLL_MS);
   pollEditor();
 })();

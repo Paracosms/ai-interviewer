@@ -144,7 +144,7 @@ test("page bridge republishes an unchanged snapshot for a delayed listener", () 
   assert.equal(messages.length, 1);
   poll();
   assert.equal(messages.length, 1);
-  now += 3000;
+  now += 15000;
   poll();
   assert.equal(messages.length, 2);
   assert.equal(messages[1].type, "CODE_SNAPSHOT");
@@ -304,8 +304,11 @@ test("page bridge prefers the model owned by the visible Monaco editor", () => {
   assert.equal(messages[0].payload.code, "candidate implementation");
 });
 
-test("page bridge publishes TYPING_ACTIVITY when Monaco model content changes", () => {
+test("page bridge debounces snapshots and throttles typing activity on Monaco changes", () => {
   const messages = [];
+  const timeouts = new Map();
+  let nextTimeoutId = 1;
+  let now = 1000;
   let onDidChangeContentCb = null;
   const model = makeModel("class Solution: pass", "python", "active", { attached: true });
   model.onDidChangeContent = (cb) => {
@@ -318,11 +321,59 @@ test("page bridge publishes TYPING_ACTIVITY when Monaco model content changes", 
     monaco: { editor: { getModels: () => [model] } },
   };
   const source = fs.readFileSync(path.join(__dirname, "..", "extension", "page_bridge.js"), "utf8");
-  vm.runInNewContext(source, { window, setInterval() { return 1; }, console });
+  vm.runInNewContext(source, {
+    Date: { now: () => now },
+    window,
+    setInterval() { return 1; },
+    setTimeout(callback) {
+      const id = nextTimeoutId;
+      nextTimeoutId += 1;
+      timeouts.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) { timeouts.delete(id); },
+    console,
+  });
 
   assert.equal(typeof onDidChangeContentCb, "function");
+  model.setValue("class Solution: return 1");
+  onDidChangeContentCb();
+  model.setValue("class Solution: return 2");
   onDidChangeContentCb();
 
-  const typingMessages = messages.filter((m) => m.type === "TYPING_ACTIVITY");
-  assert.equal(typingMessages.length, 1);
+  assert.equal(messages.filter((m) => m.type === "TYPING_ACTIVITY").length, 1);
+  assert.equal(messages.filter((m) => m.type === "CODE_SNAPSHOT").length, 1);
+  assert.equal(timeouts.size, 1);
+
+  [...timeouts.values()][0]();
+  assert.equal(messages.filter((m) => m.type === "CODE_SNAPSHOT").length, 2);
+  assert.equal(messages.at(-1).payload.code, "class Solution: return 2");
+
+  now += 500;
+  onDidChangeContentCb();
+  assert.equal(messages.filter((m) => m.type === "TYPING_ACTIVITY").length, 2);
+});
+
+test("page bridge reuses an attached active model instead of rescanning Monaco", () => {
+  const messages = [];
+  let poll;
+  let modelScans = 0;
+  const model = makeModel("class Solution: pass", "python", "active", { attached: true });
+  const window = {
+    location: { href: "https://leetcode.com/problems/two-sum/", origin: "https://leetcode.com" },
+    postMessage(message) { messages.push(message); },
+    monaco: { editor: { getModels() { modelScans += 1; return [model]; } } },
+  };
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "page_bridge.js"), "utf8");
+  vm.runInNewContext(source, {
+    window,
+    setInterval(callback) { poll = callback; return 1; },
+    console,
+  });
+
+  assert.equal(modelScans, 1);
+  poll();
+  poll();
+  assert.equal(modelScans, 1);
+  assert.equal(messages.filter((m) => m.type === "CODE_SNAPSHOT").length, 1);
 });

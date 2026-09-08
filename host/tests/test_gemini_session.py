@@ -98,6 +98,28 @@ def test_runtime_prompt_is_appended_to_editable_prompt(tmp_path: Path) -> None:
     assert "request_micro_hint" in instruction
 
 
+def test_runtime_prompt_makes_interview_untimed_and_user_ended(tmp_path: Path) -> None:
+    prompt_path = tmp_path / "interviewer_prompt.txt"
+    prompt_path.write_text(
+        "CUSTOM BEHAVIOR\nWhen time is up, end the interview.",
+        encoding="utf-8",
+    )
+
+    instruction = build_system_instruction(
+        prompt_path=prompt_path,
+        problem_title="Two Sum",
+        problem_text="Problem statement",
+        language="python3",
+        code="pass",
+    )
+
+    assert "unlimited-time practice session" in instruction
+    assert "there is no interview deadline" in instruction
+    assert "elapsedSeconds value" in instruction
+    assert "Never announce that the interview is over" in instruction
+    assert "candidate explicitly asks to stop or end it" in instruction
+
+
 def test_common_quota_error_is_user_readable() -> None:
     message = classify_gemini_error(ApiErrorForTest())
     assert "rate limit or project quota" in message

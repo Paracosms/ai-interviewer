@@ -106,7 +106,7 @@
   }
 
   function hostOfflineMessage(port) {
-    return `Local interviewer host is not running on port ${port}. Start host/run.ps1 or check the configured Host port.`;
+    return `Local interviewer host is not running on port ${port}. Start run.ps1 from the repository root or check the configured Host port.`;
   }
 
   async function requestHost(path, { method = "GET", body, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {

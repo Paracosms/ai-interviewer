@@ -37,6 +37,9 @@
   let lastProblemSignature = "";
   let lastTypingSentAt = 0;
   let codeSyncPaused = false;
+  let cachedProblemSlug = "";
+  let cachedProblemTitle = "";
+  let cachedProblemText = "";
 
   function handleTypingActivity() {
     const now = Date.now();
@@ -113,7 +116,7 @@
     if (
       message.source !== MESSAGE_SOURCE ||
       message.protocolVersion !== PROTOCOL_VERSION ||
-      !["CODE_SNAPSHOT", "DETECTION_ERROR"].includes(message.type) ||
+      !["CODE_SNAPSHOT", "DETECTION_ERROR", "TYPING_ACTIVITY"].includes(message.type) ||
       !message.payload ||
       typeof message.payload !== "object"
     ) {
@@ -123,9 +126,20 @@
   }
 
   function setPageState(error = null) {
-    const title = extractTitle();
-    const problemText = extractDescription();
     const problemSlug = extractProblemSlug();
+    if (problemSlug !== cachedProblemSlug) {
+      cachedProblemSlug = problemSlug;
+      cachedProblemTitle = "";
+      cachedProblemText = "";
+    }
+    if (!cachedProblemTitle || cachedProblemText.length < 200) {
+      cachedProblemTitle = extractTitle();
+    }
+    if (cachedProblemText.length < 200) {
+      cachedProblemText = extractDescription();
+    }
+    const title = cachedProblemTitle;
+    const problemText = cachedProblemText;
     const detected = Boolean(
       pageUrl.startsWith("https://leetcode.com/problems/") &&
       problemSlug &&
@@ -270,6 +284,9 @@
     lastSentLanguage = null;
     lastProblemSignature = "";
     latestPageState = null;
+    cachedProblemSlug = "";
+    cachedProblemTitle = "";
+    cachedProblemText = "";
     setPageState("Loading the new LeetCode problem.");
   }
 
@@ -298,6 +315,8 @@
 
   setInterval(() => {
     checkNavigation();
-    setPageState();
+    if (!cachedProblemTitle || cachedProblemText.length < 200) {
+      setPageState();
+    }
   }, PROBLEM_RETRY_MS);
 })();
